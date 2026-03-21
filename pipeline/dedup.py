@@ -162,35 +162,51 @@ def normalise_url(url: str) -> str:
     ))
 
 
+# def url_hash(url: str) -> int:
+#     """
+#     Hash a normalised URL to a 64-bit signed integer.
+
+#     This integer is stored in articles.url_hash (a bigint column).
+#     PostgreSQL bigint = 64-bit signed integer, range: -2^63 to 2^63-1.
+
+#     Why not use the URL string directly for dedup?
+#       String comparison on millions of rows is slow.
+#       Integer comparison on an indexed column is instant (~microseconds).
+
+#     Returns an integer suitable for PostgreSQL bigint.
+#     """
+#     normalised = normalise_url(url)
+#     data = normalised.encode("utf-8")
+
+#     if _HAS_MMH3:
+#         # mmh3.hash64 returns (h1, h2) — two 64-bit hashes, we use h1
+#         h1, _ = mmh3.hash64(data, seed=HASH_SEED, signed=True)
+#         return h1
+#     else:
+#         # SHA-256 fallback: fold 256 bits → 64 bits, convert to signed
+#         digest = _hashlib.sha256(data).digest()
+#         unsigned = int.from_bytes(digest[:8], "big")
+#         # Convert unsigned 64-bit to signed 64-bit
+#         if unsigned >= (1 << 63):
+#             unsigned -= (1 << 64)
+#         return unsigned
+
 def url_hash(url: str) -> int:
     """
-    Hash a normalised URL to a 64-bit signed integer.
-
-    This integer is stored in articles.url_hash (a bigint column).
-    PostgreSQL bigint = 64-bit signed integer, range: -2^63 to 2^63-1.
-
-    Why not use the URL string directly for dedup?
-      String comparison on millions of rows is slow.
-      Integer comparison on an indexed column is instant (~microseconds).
-
-    Returns an integer suitable for PostgreSQL bigint.
+    Return a 64-bit SIGNED integer fingerprint of the normalised URL.
+    PostgreSQL bigint range: -9223372036854775808 to 9223372036854775807
     """
-    normalised = normalise_url(url)
-    data = normalised.encode("utf-8")
-
+    data = normalise_url(url).encode("utf-8")
     if _HAS_MMH3:
-        # mmh3.hash64 returns (h1, h2) — two 64-bit hashes, we use h1
         h1, _ = mmh3.hash64(data, seed=HASH_SEED, signed=True)
         return h1
-    else:
-        # SHA-256 fallback: fold 256 bits → 64 bits, convert to signed
-        digest = _hashlib.sha256(data).digest()
-        unsigned = int.from_bytes(digest[:8], "big")
-        # Convert unsigned 64-bit to signed 64-bit
-        if unsigned >= (1 << 63):
-            unsigned -= (1 << 64)
-        return unsigned
-
+    # SHA-256 fallback — fold to 64-bit signed
+    digest   = _hashlib.sha256(data).digest()
+    unsigned = int.from_bytes(digest[:8], "big")
+    # Force into signed 64-bit range
+    if unsigned >= (1 << 63):
+        unsigned -= (1 << 64)
+    return unsigned
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LAYER 2: NEAR-DUPLICATE TITLE DEDUPLICATION (SimHash)
