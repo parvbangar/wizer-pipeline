@@ -22,6 +22,11 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Debug key length
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: echo "Key length is ${#SUPABASE_SERVICE_KEY} chars"    
+
       - run: pip install -r requirements.txt
 
       - name: Poll tier1_high feeds
