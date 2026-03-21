@@ -1,8 +1,8 @@
-name: Ingest — tier2_medium (every 15 min)
+name: Ingest — tier2_medium (every 3 hours)
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "0 */3 * * *"
   workflow_dispatch:
 
 concurrency:

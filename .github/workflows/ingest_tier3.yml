@@ -1,8 +1,8 @@
-name: Ingest — tier3_low (hourly)
+name: Ingest — tier3_low (every 6 hours)
 
 on:
   schedule:
-    - cron: "0 * * * *"    # top of every hour
+    - cron: "0 */6 * * *"    # top of every hour
   workflow_dispatch:
 
 concurrency:
