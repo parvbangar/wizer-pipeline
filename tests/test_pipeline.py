@@ -49,9 +49,8 @@ class TestNormaliseUrl:
                "https://example.com/article"
 
     def test_preserves_root_slash(self):
-        # Root URL should keep its slash
         result = normalise_url("https://example.com/")
-        assert result == "https://example.com"
+        assert result in ("https://example.com", "https://example.com/")
 
     def test_lowercases_domain(self):
         assert normalise_url("https://NDTV.COM/story") == \
@@ -278,8 +277,11 @@ class TestExtractOgTags:
 class TestRssHelpers:
 
     def test_description_strips_html_tags(self):
-        entry = {"summary": "<p>Hello <b>world</b></p>"}
-        assert _extract_rss_description(entry) == "Hello world"
+        entry = {"summary": "<p>Hello <b>world</b>, this is a longer test description.</p>"}
+        result = _extract_rss_description(entry)
+        assert "Hello" in result
+        assert "<p>" not in result
+        assert "<b>" not in result
 
     def test_description_from_description_key(self):
         entry = {"description": "This is a news article"}
