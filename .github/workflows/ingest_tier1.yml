@@ -1,4 +1,4 @@
-name: Ingest — tier1_high (every 15 min)
+name: Ingest — tier1_high (every 1 hour)
 
 on:
   schedule:
@@ -12,7 +12,7 @@ concurrency:
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 14        # hard kill if it hangs (shorter than 5min interval)
+    timeout-minutes: 59        # hard kill if it hangs (shorter than 5min interval)
 
     steps:
       - uses: actions/checkout@v4
