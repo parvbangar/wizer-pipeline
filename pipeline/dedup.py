@@ -262,6 +262,8 @@ def simhash(text: str) -> int:
         else:
             digest = _hashlib.sha256(token_bytes).digest()
             token_hash = int.from_bytes(digest[:8], "big")
+            if token_hash >= (1 << 63):
+                token_hash -= (1 << 64)
 
         # For each bit in the 64-bit hash
         for i in range(64):
@@ -274,6 +276,9 @@ def simhash(text: str) -> int:
         if v[i] > 0:
             fingerprint |= (1 << i)
 
+    # Convert to signed 64-bit for PostgreSQL bigint
+    if fingerprint >= (1 << 63):
+        fingerprint -= (1 << 64)
     return fingerprint
 
 
