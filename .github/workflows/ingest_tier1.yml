@@ -1,0 +1,31 @@
+name: Ingest — tier1_high (every 5 min)
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ingest-tier1
+  cancel-in-progress: false   # finish current run, don't cancel it
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4        # hard kill if it hangs (shorter than 5min interval)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Poll tier1_high feeds
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python main.py --tier tier1_high

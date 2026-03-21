@@ -1,0 +1,32 @@
+name: Ingest — tier3_low (hourly)
+
+on:
+  schedule:
+    - cron: "0 * * * *"    # top of every hour
+  workflow_dispatch:
+
+concurrency:
+  group: ingest-tier3
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55     # tier3 has many feeds — give it breathing room
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ingest tier3_low
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python main.py --tier tier3_low

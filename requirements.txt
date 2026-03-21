@@ -1,0 +1,22 @@
+# News Ingestion Pipeline — Python dependencies
+# Install with: pip install -r requirements.txt
+
+# ── RSS/Atom parsing ──────────────────────────────────────────────────────────
+feedparser==6.0.11
+
+# ── Full-text article extraction ──────────────────────────────────────────────
+trafilatura==1.12.2          # primary — best accuracy for news articles
+newspaper3k==0.2.8           # fallback — broader site support
+
+# ── Database ──────────────────────────────────────────────────────────────────
+supabase==2.10.0             # Supabase Python client
+
+# ── URL hashing ───────────────────────────────────────────────────────────────
+mmh3==4.1.0                  # MurmurHash3 — fast 64-bit URL fingerprinting
+                             # Falls back to stdlib hashlib if not installed
+
+# ── Environment ───────────────────────────────────────────────────────────────
+python-dotenv==1.0.1         # loads .env file
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest==8.3.3
