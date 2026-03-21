@@ -124,8 +124,8 @@ TIER_POLL_INTERVALS: dict[str, int] = {
 
 # How many feeds to poll at the same time
 # (asyncio semaphore — don't set above 30 or remote servers start blocking you)
-MAX_CONCURRENT_FEEDS    = int(os.getenv("MAX_CONCURRENT_FEEDS", "20"))
-MAX_CONCURRENT_ARTICLES = int(os.getenv("MAX_CONCURRENT_ARTICLES", "10"))
+MAX_CONCURRENT_FEEDS    = int(os.getenv("MAX_CONCURRENT_FEEDS", "5"))
+MAX_CONCURRENT_ARTICLES = int(os.getenv("MAX_CONCURRENT_ARTICLES", "3"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
