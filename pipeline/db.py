@@ -195,7 +195,6 @@ def _is_feed_due(feed: dict, now: datetime) -> bool:
 
 def update_feed_after_poll(
     feed_id: str,
-    *,
     success: bool,
     new_articles: int,
     error_msg: str = "",
