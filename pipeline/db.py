@@ -129,7 +129,8 @@ def get_due_feeds(tier: str | None = None) -> list[dict]:
             client.table(TABLE_FEEDS)
             .select(select_cols)
             .eq(FEED_COL_IS_ACTIVE, True)
-            .order(FEED_COL_PRIORITY, desc=True)   # highest priority first
+            .order(FEED_COL_LAST_POLLED, desc=False, nullsfirst=True)  # oldest polled first → natural rotation
+            .limit(10000)
         )
         if tier:
             query = query.eq(FEED_COL_TIER, tier)
