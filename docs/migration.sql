@@ -245,23 +245,22 @@ SELECT * FROM pipeline_runs ORDER BY run_at DESC LIMIT 100;
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- STEP 7: Migrate pipeline_runs.tier → cadence
--- The pipeline now groups by update_cadence instead of validation_tier.
--- This renames the column safely — only runs if 'tier' still exists.
+-- STEP 7: Add cadence column to pipeline_runs
+--
+-- WHY ADD COLUMN INSTEAD OF RENAME?
+--   The table already exists in your DB with a 'tier' column.
+--   CREATE TABLE IF NOT EXISTS above does nothing on an existing table.
+--   ADD COLUMN IF NOT EXISTS is idempotent — safe to run multiple times.
+--   We keep the old 'tier' column so historical rows are not lost.
 -- ─────────────────────────────────────────────────────────────────────────────
 
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'pipeline_runs' AND column_name = 'tier'
-    ) AND NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'pipeline_runs' AND column_name = 'cadence'
-    ) THEN
-        ALTER TABLE pipeline_runs RENAME COLUMN tier TO cadence;
-    END IF;
-END $$;
+ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS cadence text;
+
+-- Backfill historical rows so old data is still queryable
+UPDATE pipeline_runs SET cadence = tier WHERE cadence IS NULL AND tier IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS pipeline_runs_cadence_idx
+  ON pipeline_runs (cadence, run_at DESC);
 
 
 -- ─────────────────────────────────────────────────────────────────────────────

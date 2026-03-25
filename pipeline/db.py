@@ -474,9 +474,18 @@ def log_run(summary: dict) -> None:
     """
     Write a summary row to pipeline_runs after each run.
     This gives you a history of every pipeline execution for monitoring.
-    Non-fatal: if this fails, the pipeline continues.
+
+    If the insert fails (e.g. missing column), logs an ERROR with the full
+    detail so it is visible in GitHub Actions — previously this was a silent
+    warning which made DB schema mismatches invisible.
     """
     try:
         get_client().table(TABLE_RUNS).insert(summary).execute()
+        log.debug("pipeline_runs row written: cadence=%s", summary.get("cadence"))
     except Exception as e:
-        log.warning("log_run failed (non-fatal): %s", e)
+        log.error(
+            "log_run FAILED — run not recorded in pipeline_runs. "
+            "Check that the 'cadence' column exists (run migration Step 7). "
+            "Error: %s | summary keys: %s",
+            e, list(summary.keys()),
+        )
