@@ -47,7 +47,8 @@ FEED_COL_URL             = "feed_url"
 FEED_COL_FINAL_URL       = "final_url"
 FEED_COL_DOMAIN          = "domain"
 FEED_COL_PUBLISHER       = "publisher_name"
-FEED_COL_TIER            = "validation_tier"   # tier1_high / tier2_medium / tier3_low
+FEED_COL_TIER            = "validation_tier"   # kept for reference / monitoring views
+FEED_COL_CADENCE         = "update_cadence"    # breaking_news / multiple_daily / daily / several_weekly / weekly / monthly / unknown
 FEED_COL_LANGUAGE        = "language_code"
 FEED_COL_COUNTRY         = "country_code"
 FEED_COL_IAB1            = "iab_tier1"
@@ -104,22 +105,20 @@ ART_COL_LANG_CODE     = "language_code"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# POLLING INTERVALS PER TIER
+# POLLING INTERVALS PER UPDATE CADENCE
 #
-# What is a "tier"?
-#   tier1_high   = top Indian/global outlets, breaking news, updated constantly
-#   tier2_medium = mid-tier regional outlets, updated every hour or so
-#   tier3_low    = blogs, long-tail sources, updated daily or less
-#
-# The pipeline uses validation_tier from your feeds table to decide how often
-# to poll each feed.  poll_interval_mins in your DB overrides this default
-# when it's set (see db.get_due_feeds).
+# The pipeline groups feeds by their update_cadence column and polls each
+# group on a separate GitHub Actions schedule.
+# poll_interval_mins in your DB overrides these defaults when set.
 # ─────────────────────────────────────────────────────────────────────────────
-TIER_POLL_INTERVALS: dict[str, int] = {
-    "tier1_high":   5,    # minutes between polls
-    "tier2_medium": 15,
-    "tier3_low":    60,
-    "unknown":      60,   # safe default for feeds with no tier set
+CADENCE_POLL_INTERVALS: dict[str, int] = {
+    "breaking_news":   30,    # 30 minutes  — live news desks, wire agencies
+    "multiple_daily":  180,   # 3 hours     — major outlets publishing 5+ times/day
+    "daily":           720,   # 12 hours    — once-a-day publishers
+    "several_weekly":  2880,  # 2 days      — a few posts per week
+    "weekly":          10080, # 7 days      — weekly newsletters / digests
+    "monthly":         43200, # 30 days     — monthly publications
+    "unknown":         720,   # 12 hours    — unclassified; treat conservatively
 }
 
 # How many feeds to poll at the same time

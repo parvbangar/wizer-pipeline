@@ -12,10 +12,13 @@ HOW TO RUN:
   # Test it first — no database writes
   python main.py --dry-run --verbose
 
-  # Poll only the most important feeds (tier1)
-  python main.py --tier tier1_high
+  # Poll only breaking news feeds (runs every 30 min in CI)
+  python main.py --cadence breaking_news
 
-  # Poll all tiers (slow — use for initial validation)
+  # Poll daily feeds
+  python main.py --cadence daily
+
+  # Poll all cadences (slow — use for local testing only)
   python main.py
 
   # See all options
@@ -24,7 +27,7 @@ HOW TO RUN:
 WHAT HAPPENS WHEN YOU RUN IT:
   1. Reads your .env file for SUPABASE_URL and SUPABASE_SERVICE_KEY
   2. Connects to Supabase
-  3. Fetches all feeds that are due for polling (based on their tier)
+  3. Fetches all feeds that are due for polling (based on their update_cadence)
   4. Polls each feed concurrently (up to MAX_CONCURRENT_FEEDS at once)
   5. For each article: deduplicates, crawls, inserts to articles table
   6. Updates feed state (last_polled_at, fail_count, etc.)
@@ -77,21 +80,28 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python main.py --dry-run --verbose          Test without writing to DB
-  python main.py --tier tier1_high            Poll top feeds only (5 min cycle)
-  python main.py --tier tier2_medium          Poll mid-tier feeds (15 min cycle)
-  python main.py --tier tier3_low             Poll long-tail feeds (60 min cycle)
-  python main.py                              Poll ALL due feeds
+  python main.py --dry-run --verbose              Test without writing to DB
+  python main.py --cadence breaking_news          Poll live news feeds (30 min cycle)
+  python main.py --cadence multiple_daily         Poll high-frequency feeds (3 hr cycle)
+  python main.py --cadence daily                  Poll daily feeds (12 hr cycle)
+  python main.py --cadence several_weekly         Poll semi-weekly feeds (2 day cycle)
+  python main.py --cadence weekly                 Poll weekly feeds (7 day cycle)
+  python main.py --cadence monthly                Poll monthly feeds (30 day cycle)
+  python main.py --cadence unknown                Poll unclassified feeds (12 hr cycle)
+  python main.py                                  Poll ALL due feeds
         """,
     )
 
     parser.add_argument(
-        "--tier",
-        choices=["tier1_high", "tier2_medium", "tier3_low"],
+        "--cadence",
+        choices=[
+            "breaking_news", "multiple_daily", "daily",
+            "several_weekly", "weekly", "monthly", "unknown",
+        ],
         default=None,
         help=(
-            "Poll only feeds with this validation_tier value. "
-            "Defaults to all tiers."
+            "Poll only feeds with this update_cadence value. "
+            "Defaults to all cadences."
         ),
     )
 
@@ -127,13 +137,13 @@ Examples:
         db_module.log_run                = lambda *a, **k: None
 
     log.info(
-        "Starting pipeline | tier=%s | dry_run=%s",
-        args.tier or "all", args.dry_run,
+        "Starting pipeline | cadence=%s | dry_run=%s",
+        args.cadence or "all", args.dry_run,
     )
 
     try:
         summary = asyncio.run(
-            run_pipeline(tier=args.tier, dry_run=args.dry_run)
+            run_pipeline(cadence=args.cadence, dry_run=args.dry_run)
         )
     except KeyboardInterrupt:
         log.info("Stopped by user (Ctrl+C)")
@@ -147,7 +157,7 @@ Examples:
     # Print a readable summary to console
     print("\n" + "═" * 60)
     print(f"  Run complete")
-    print(f"  Tier:            {summary.get('tier', 'all')}")
+    print(f"  Cadence:         {summary.get('cadence', 'all')}")
     print(f"  Feeds polled:    {summary.get('feeds_attempted', 0)}")
     print(f"  New articles:    {summary.get('new_articles', 0)}")
     print(f"  Near-duplicates: {summary.get('near_duplicates', 0)}")

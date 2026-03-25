@@ -67,7 +67,7 @@ from pipeline.circuit_breaker import (
 from pipeline.config import (
     MAX_CONCURRENT_FEEDS, MAX_CONCURRENT_ARTICLES,
     FEED_COL_ID, FEED_COL_URL, FEED_COL_FINAL_URL,
-    FEED_COL_TIER, FEED_COL_FAIL_COUNT,
+    FEED_COL_CADENCE, FEED_COL_FAIL_COUNT,
 )
 from pipeline.crawler import CrawledArticle, crawl_article
 from pipeline.dedup import normalise_url, url_hash, simhash, is_near_duplicate
@@ -217,17 +217,17 @@ async def poll_one_feed(
     """
     feed_id  = str(feed[FEED_COL_ID])
     feed_url = feed.get(FEED_COL_FINAL_URL) or feed[FEED_COL_URL]
-    tier     = feed.get(FEED_COL_TIER, "unknown")
+    cadence  = feed.get(FEED_COL_CADENCE, "unknown")
 
     # ── CIRCUIT BREAKER: should we even try? ─────────────────────────────────
     skip, reason = should_skip_feed(feed)
     if skip:
-        log.debug("SKIP [%s] %s — %s", tier, feed_url, reason)
+        log.debug("SKIP [%s] %s — %s", cadence, feed_url, reason)
         return {"new": 0, "duplicates": 0, "errors": 0, "skipped": True}
 
     async with feed_sem:   # limit concurrent feed fetches
         t0 = time.perf_counter()
-        log.info("POLLING [%s] %s", tier, feed_url)
+        log.info("POLLING [%s] %s", cadence, feed_url)
 
         # ── WARM THE IN-MEMORY DEDUP CACHE ───────────────────────────────────
         # Load recent url_hashes for THIS feed into a Python set
@@ -249,7 +249,7 @@ async def poll_one_feed(
             # Log circuit state (warning at 3 fails, error at 5 fails)
             current_fails = int(feed.get(FEED_COL_FAIL_COUNT) or 0) + 1
             log_circuit_state(feed_id, feed_url, current_fails)
-            log.warning("POLL FAILED [%s] %s — %s", tier, feed_url, err_msg)
+            log.warning("POLL FAILED [%s] %s — %s", cadence, feed_url, err_msg)
             return {"new": 0, "duplicates": 0, "errors": 1, "skipped": False}
 
         log.debug("  %d entries from %s", len(entries), feed_url)
@@ -318,29 +318,30 @@ async def poll_one_feed(
 # MAIN RUN FUNCTION
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def run_pipeline(tier: str | None = None, dry_run: bool = False) -> dict:
+async def run_pipeline(cadence: str | None = None, dry_run: bool = False) -> dict:
     """
-    Poll all due feeds for the given tier (or all tiers if tier=None).
+    Poll all due feeds for the given cadence (or all cadences if cadence=None).
 
     Args:
-      tier:    'tier1_high', 'tier2_medium', 'tier3_low', or None for all
+      cadence: 'breaking_news', 'multiple_daily', 'daily', 'several_weekly',
+               'weekly', 'monthly', 'unknown', or None for all
       dry_run: If True, fetch feeds but do NOT insert to DB (for testing)
 
     Returns a summary dict with counts of new articles, duplicates, errors.
     This summary is also written to the pipeline_runs table.
     """
-    log.info("═══ Pipeline run start | tier=%s | dry_run=%s ═══", tier or "all", dry_run)
+    log.info("═══ Pipeline run start | cadence=%s | dry_run=%s ═══", cadence or "all", dry_run)
     run_start = time.perf_counter()
 
     loop = asyncio.get_event_loop()
 
     # Load feeds due for polling
-    feeds = await loop.run_in_executor(None, db.get_due_feeds, tier)
+    feeds = await loop.run_in_executor(None, db.get_due_feeds, cadence)
     log.info("Loaded %d feeds due for polling", len(feeds))
 
     if not feeds:
         log.info("No feeds due — exiting early")
-        return {"tier": tier, "feeds": 0, "new": 0, "errors": 0}
+        return {"cadence": cadence, "feeds": 0, "new": 0, "errors": 0}
 
     # Shared semaphores
     feed_sem    = asyncio.Semaphore(MAX_CONCURRENT_FEEDS)
@@ -381,7 +382,7 @@ async def run_pipeline(tier: str | None = None, dry_run: bool = False) -> dict:
     duration = round(time.perf_counter() - run_start, 2)
 
     summary = {
-        "tier":            tier or "all",
+        "cadence":         cadence or "all",
         "feeds_attempted": len(feeds),
         "feeds_skipped":   total_skipped,
         "new_articles":    total_new,
@@ -394,9 +395,9 @@ async def run_pipeline(tier: str | None = None, dry_run: bool = False) -> dict:
     }
 
     log.info(
-        "═══ Run complete | %d new | %d near-dups | %d exact-dups | "
+        "═══ Run complete | cadence=%s | %d new | %d near-dups | %d exact-dups | "
         "%d errors | %.1fs ═══",
-        total_new, total_near_dups, total_exact_dups, total_errors, duration,
+        cadence or "all", total_new, total_near_dups, total_exact_dups, total_errors, duration,
     )
 
     if not dry_run:

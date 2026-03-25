@@ -14,7 +14,7 @@
 
 CREATE TABLE IF NOT EXISTS pipeline_runs (
   id               uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-  tier             text,                        -- 'tier1_high', 'tier2_medium', etc.
+  cadence          text,                        -- 'breaking_news', 'multiple_daily', 'daily', etc.
   feeds_attempted  integer     NOT NULL DEFAULT 0,
   feeds_skipped    integer     NOT NULL DEFAULT 0,
   new_articles     integer     NOT NULL DEFAULT 0,
@@ -127,7 +127,12 @@ CREATE INDEX IF NOT EXISTS articles_title_simhash_idx
 -- These make the pipeline's "get due feeds" query much faster.
 -- ─────────────────────────────────────────────────────────────────────────────
 
--- "Get all active feeds for tier1, ordered by priority"
+-- "Get all active feeds for a cadence, ordered by priority"
+CREATE INDEX IF NOT EXISTS feeds_active_cadence_priority_idx
+  ON feeds (is_active, update_cadence, priority_score DESC NULLS LAST)
+  WHERE is_active = true;
+
+-- Kept for backward compatibility / monitoring views
 CREATE INDEX IF NOT EXISTS feeds_active_tier_priority_idx
   ON feeds (is_active, validation_tier, priority_score DESC NULLS LAST)
   WHERE is_active = true;
@@ -240,7 +245,27 @@ SELECT * FROM pipeline_runs ORDER BY run_at DESC LIMIT 100;
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- STEP 7: Verify setup — run this to confirm everything was created
+-- STEP 7: Migrate pipeline_runs.tier → cadence
+-- The pipeline now groups by update_cadence instead of validation_tier.
+-- This renames the column safely — only runs if 'tier' still exists.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'pipeline_runs' AND column_name = 'tier'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'pipeline_runs' AND column_name = 'cadence'
+    ) THEN
+        ALTER TABLE pipeline_runs RENAME COLUMN tier TO cadence;
+    END IF;
+END $$;
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- STEP 8: Verify setup — run this to confirm everything was created
 -- ─────────────────────────────────────────────────────────────────────────────
 
 SELECT

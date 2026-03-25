@@ -1,0 +1,33 @@
+name: Ingest — several_weekly (every 2 days)
+
+on:
+  schedule:
+    - cron: "0 0 */2 * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ingest-several-weekly
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Poll several_weekly feeds
+        env:
+          SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY:   ${{ secrets.SUPABASE_SERVICE_KEY }}
+          MAX_CONCURRENT_FEEDS:   "10"
+          MAX_CONCURRENT_ARTICLES: "5"
+        run: python main.py --cadence several_weekly

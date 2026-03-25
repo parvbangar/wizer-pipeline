@@ -1,0 +1,33 @@
+name: Ingest — breaking_news (every 30 min)
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ingest-breaking-news
+  cancel-in-progress: false   # finish current run, don't cancel it
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 28        # must finish before next 30-min window
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Poll breaking_news feeds
+        env:
+          SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY:   ${{ secrets.SUPABASE_SERVICE_KEY }}
+          MAX_CONCURRENT_FEEDS:   "20"
+          MAX_CONCURRENT_ARTICLES: "8"
+        run: python main.py --cadence breaking_news

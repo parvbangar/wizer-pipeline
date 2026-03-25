@@ -32,12 +32,12 @@ from pipeline.config import (
     SUPABASE_URL, SUPABASE_KEY,
     TABLE_FEEDS, TABLE_ARTICLES, TABLE_RUNS,
     FEED_COL_ID, FEED_COL_URL, FEED_COL_FINAL_URL, FEED_COL_DOMAIN,
-    FEED_COL_PUBLISHER, FEED_COL_TIER, FEED_COL_LANGUAGE, FEED_COL_COUNTRY,
+    FEED_COL_PUBLISHER, FEED_COL_CADENCE, FEED_COL_LANGUAGE, FEED_COL_COUNTRY,
     FEED_COL_IAB1, FEED_COL_IAB2, FEED_COL_HAS_PAYWALL, FEED_COL_IS_ACTIVE,
     FEED_COL_POLL_INTERVAL, FEED_COL_PRIORITY, FEED_COL_FAIL_COUNT,
     FEED_COL_LAST_POLLED, FEED_COL_LAST_SUCCESS, FEED_COL_ARTICLES_FOUND,
     ART_COL_URL_HASH, ART_COL_FEED_ID, ART_COL_CRAWLED,
-    TIER_POLL_INTERVALS,
+    CADENCE_POLL_INTERVALS,
 )
 
 log = logging.getLogger(__name__)
@@ -81,7 +81,7 @@ def get_client():
 # FEEDS: READING
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_due_feeds(tier: str | None = None) -> list[dict]:
+def get_due_feeds(cadence: str | None = None) -> list[dict]:
     """
     Return feeds that are due to be polled right now.
 
@@ -90,16 +90,12 @@ def get_due_feeds(tier: str | None = None) -> list[dict]:
       - last_polled_at is NULL (never polled) OR
         (now - last_polled_at) >= poll_interval_mins
 
-    If poll_interval_mins is NULL in the DB, we use the tier default
-    from TIER_POLL_INTERVALS.
-
-    The query uses PostgreSQL's INTERVAL type for the time comparison.
-    We select the columns we actually use — not SELECT * — to keep
-    payloads small and avoid surprises when columns are added.
+    If poll_interval_mins is NULL in the DB, we use the cadence default
+    from CADENCE_POLL_INTERVALS.
 
     Args:
-      tier: If given, only return feeds with this validation_tier value.
-            If None, return feeds from ALL tiers.
+      cadence: If given, only return feeds with this update_cadence value.
+               If None, return feeds from ALL cadences.
     """
     client = get_client()
 
@@ -110,7 +106,7 @@ def get_due_feeds(tier: str | None = None) -> list[dict]:
         FEED_COL_FINAL_URL,
         FEED_COL_DOMAIN,
         FEED_COL_PUBLISHER,
-        FEED_COL_TIER,
+        FEED_COL_CADENCE,
         FEED_COL_LANGUAGE,
         FEED_COL_COUNTRY,
         FEED_COL_IAB1,
@@ -132,14 +128,13 @@ def get_due_feeds(tier: str | None = None) -> list[dict]:
             .order(FEED_COL_LAST_POLLED, desc=False, nullsfirst=True)  # oldest polled first → natural rotation
             .limit(10000)
         )
-        if tier:
-            query = query.eq(FEED_COL_TIER, tier)
+        if cadence:
+            query = query.eq(FEED_COL_CADENCE, cadence)
 
         resp = query.execute()
         all_feeds = resp.data or []
 
         # Filter in Python: feeds where enough time has passed since last poll
-        # (Doing this in Python is simpler than complex SQL for beginners)
         now = datetime.now(timezone.utc)
         due = []
         for feed in all_feeds:
@@ -147,8 +142,8 @@ def get_due_feeds(tier: str | None = None) -> list[dict]:
                 due.append(feed)
 
         log.info(
-            "Found %d feeds due for polling (tier=%s, total_active=%d)",
-            len(due), tier or "all", len(all_feeds),
+            "Found %d feeds due for polling (cadence=%s, total_active=%d)",
+            len(due), cadence or "all", len(all_feeds),
         )
         return due
 
@@ -177,14 +172,14 @@ def _is_feed_due(feed: dict, now: datetime) -> bool:
     except (ValueError, AttributeError):
         return True   # Can't parse timestamp → poll to be safe
 
-    # Get the interval: prefer DB value, fall back to tier default
+    # Get the interval: prefer DB value, fall back to cadence default
     db_interval = feed.get(FEED_COL_POLL_INTERVAL)  # poll_interval_mins from DB
-    tier = feed.get(FEED_COL_TIER, "unknown")
+    cadence = feed.get(FEED_COL_CADENCE, "unknown")
 
     if db_interval and isinstance(db_interval, (int, float)) and db_interval > 0:
         interval_minutes = int(db_interval)
     else:
-        interval_minutes = TIER_POLL_INTERVALS.get(tier, 60)
+        interval_minutes = CADENCE_POLL_INTERVALS.get(cadence, 720)
 
     elapsed_minutes = (now - last_polled).total_seconds() / 60
     return elapsed_minutes >= interval_minutes
