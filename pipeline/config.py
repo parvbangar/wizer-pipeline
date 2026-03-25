@@ -168,13 +168,28 @@ SIMHASH_DISTANCE_THRESHOLD = 3    # bit distance ≤ 3 = near-duplicate title
 CRAWL_TIMEOUT_SECONDS = int(os.getenv("CRAWL_TIMEOUT", "15"))
 MAX_ARTICLE_BODY_CHARS = 80_000   # truncate very long articles before storing
 
+# Default bot user agent — identifies us honestly
 USER_AGENT = (
     "Mozilla/5.0 (compatible; NewsIngestBot/1.0; "
     "+https://github.com/your-org/news-pipeline)"
 )
 
-# Domains where we skip full-text crawl (paywalled).
-# has_paywall=True in your feeds table also triggers this automatically.
+# Googlebot user agent — many paywalled news sites whitelist Googlebot
+# so their content gets indexed by Google.  Used as the primary fallback
+# when the default UA fails or hits a paywall.
+GOOGLEBOT_UA = (
+    "Mozilla/5.0 (compatible; Googlebot/2.1; "
+    "+http://www.google.com/bot.html)"
+)
+
+# Retry / fallback settings
+MAX_FETCH_RETRIES    = int(os.getenv("MAX_FETCH_RETRIES", "3"))
+RETRY_DELAY_SECONDS  = float(os.getenv("RETRY_DELAY", "1.0"))
+ARCHIVE_ORG_TIMEOUT  = int(os.getenv("ARCHIVE_ORG_TIMEOUT", "8"))
+
+# Known paywalled domains — the crawler STILL attempts every strategy
+# (Googlebot, AMP, Wayback) on these; this list is only used for logging
+# and to skip the default UA attempt (which would definitely fail).
 PAYWALLED_DOMAINS: frozenset = frozenset({
     # Indian paywalled
     "thehindu.com", "hindustantimes.com", "financialexpress.com",

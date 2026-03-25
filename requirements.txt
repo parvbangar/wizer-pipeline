@@ -6,7 +6,10 @@ feedparser==6.0.11
 
 # ── Full-text article extraction ──────────────────────────────────────────────
 trafilatura==1.12.2          # primary — best accuracy for news articles
-newspaper3k==0.2.8           # fallback — broader site support
+readability-lxml==0.8.1      # fallback 1 — Mozilla Readability algorithm
+newspaper3k==0.2.8           # fallback 2 — broader site support, re-fetches URL
+beautifulsoup4==4.12.3       # fallback 3 — raw <p> extraction (last resort)
+lxml==5.3.0                  # HTML parser used by readability-lxml and bs4
 
 # ── Database ──────────────────────────────────────────────────────────────────
 supabase==2.10.0             # Supabase Python client
