@@ -264,7 +264,26 @@ CREATE INDEX IF NOT EXISTS pipeline_runs_cadence_idx
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- STEP 8: Verify setup — run this to confirm everything was created
+-- STEP 8: Add crawl_strategy column to articles
+--
+-- Tracks which fetch strategy successfully retrieved the article HTML:
+--   'rss_content' — full text was in the RSS feed itself (no HTTP needed)
+--   'default'     — standard NewsIngestBot user agent
+--   'googlebot'   — Googlebot UA (used for paywalled / blocked sites)
+--   'amp'         — AMP URL variant (/amp, ?amp=1, amp.domain)
+--   'wayback'     — archive.org Wayback Machine snapshot
+--   'failed'      — all strategies failed; article stored with RSS metadata only
+-- ─────────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE articles ADD COLUMN IF NOT EXISTS crawl_strategy text;
+
+CREATE INDEX IF NOT EXISTS articles_crawl_strategy_idx
+  ON articles (crawl_strategy)
+  WHERE crawl_strategy IS NOT NULL;
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- STEP 9: Verify setup — run this to confirm everything was created
 -- ─────────────────────────────────────────────────────────────────────────────
 
 SELECT
