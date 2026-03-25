@@ -1,8 +1,8 @@
-name: Ingest — monthly (1st of each month)
+name: Ingest — monthly (every 24 hours)
 
 on:
   schedule:
-    - cron: "0 0 1 * *"
+    - cron: "0 3 * * *"
   workflow_dispatch:
 
 concurrency:

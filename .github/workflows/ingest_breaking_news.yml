@@ -1,8 +1,8 @@
-name: Ingest — breaking_news (every 30 min)
+name: Ingest — breaking_news (every 1 hour)
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "0 * * * *"
   workflow_dispatch:
 
 concurrency:
@@ -12,7 +12,7 @@ concurrency:
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 28        # must finish before next 30-min window
+    timeout-minutes: 58        # must finish before next 1-hour window
 
     steps:
       - uses: actions/checkout@v4

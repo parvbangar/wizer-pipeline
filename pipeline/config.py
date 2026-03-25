@@ -112,12 +112,12 @@ ART_COL_LANG_CODE     = "language_code"
 # poll_interval_mins in your DB overrides these defaults when set.
 # ─────────────────────────────────────────────────────────────────────────────
 CADENCE_POLL_INTERVALS: dict[str, int] = {
-    "breaking_news":   30,    # 30 minutes  — live news desks, wire agencies
+    "breaking_news":   60,    # 60 minutes  — live news desks, wire agencies
     "multiple_daily":  180,   # 3 hours     — major outlets publishing 5+ times/day
     "daily":           720,   # 12 hours    — once-a-day publishers
-    "several_weekly":  2880,  # 2 days      — a few posts per week
-    "weekly":          10080, # 7 days      — weekly newsletters / digests
-    "monthly":         43200, # 30 days     — monthly publications
+    "several_weekly":  1440,  # 24 hours    — a few posts per week
+    "weekly":          1440,  # 24 hours    — weekly newsletters / digests
+    "monthly":         1440,  # 24 hours    — monthly publications
     "unknown":         720,   # 12 hours    — unclassified; treat conservatively
 }
 
