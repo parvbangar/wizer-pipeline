@@ -421,6 +421,12 @@ async def run_pipeline(cadence: str | None = None, dry_run: bool = False) -> dic
             total_errors, duration,
         )
 
+        # ── ARTICLE TABLE SIZE CAP ─────────────────────────────────────────
+        if not dry_run:
+            pruned = await loop.run_in_executor(None, db.prune_articles_if_needed)
+            if pruned:
+                log.info("Article cap: pruned %d oldest articles to stay under 500K", pruned)
+
     finally:
         # Always update the DB record — even if the run was killed or crashed
         if not dry_run:

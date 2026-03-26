@@ -16,7 +16,8 @@ import os
 from dotenv import load_dotenv
 
 # Load .env file so os.getenv() can find SUPABASE_URL etc.
-load_dotenv()
+load_dotenv()          # tries .env file (standard)
+load_dotenv(".env.local", override=False)  # fallback for local dev
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -160,6 +161,15 @@ DORMANT_RECHECK_INTERVAL_DAYS = 7
 # ─────────────────────────────────────────────────────────────────────────────
 HASH_SEED              = 42       # MurmurHash3 seed — NEVER change after first run
 SIMHASH_DISTANCE_THRESHOLD = 3    # bit distance ≤ 3 = near-duplicate title
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ARTICLE TABLE SIZE CAP
+# After each pipeline run, oldest articles are pruned to keep the table lean.
+# ─────────────────────────────────────────────────────────────────────────────
+ARTICLE_HARD_LIMIT    = int(os.getenv("ARTICLE_HARD_LIMIT",  "500000"))
+ARTICLE_PRUNE_TARGET  = int(os.getenv("ARTICLE_PRUNE_TARGET", "490000"))
+# Prune down to 490K so the trigger doesn't fire on every single run.
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -1,0 +1,69 @@
+name: Layer 2 — Metadata Enrichment
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WHEN DOES THIS RUN?
+#   Every 3 hours automatically, offset by 30 minutes from ingestion runs.
+#   Ingestion (breaking_news) fires at :00 — enrichment fires at :30.
+#   This ensures newly ingested articles are ready before enrichment starts.
+#
+#   Schedule:  0:30, 3:30, 6:30, 9:30, 12:30, 15:30, 18:30, 21:30 UTC
+#              (6:00, 9:00, 12:00, 15:00, 18:00, 21:00, 0:00, 3:00 IST)
+#
+# BATCH SIZE:
+#   Default: 500 per run × 8 runs/day = 4,000 articles/day enriched.
+#   Override via manual trigger (workflow_dispatch) to drain backlog faster.
+#
+# WHY SEPARATE FROM INGESTION?
+#   NLP (spaCy, YAKE, VADER) is CPU-heavy. Running enrichment in the same
+#   job as ingestion would block new articles from arriving. Separate jobs
+#   let both pipelines run concurrently on different runners.
+# ─────────────────────────────────────────────────────────────────────────────
+on:
+  schedule:
+    - cron: "30 */3 * * *"   # every 3 hours, offset 30 min from ingestion
+  workflow_dispatch:          # manual trigger from GitHub UI
+    inputs:
+      batch_size:
+        description: "Number of articles to enrich (default: 500)"
+        required: false
+        default: "500"
+      force:
+        description: "Re-enrich already-enriched articles? (true/false)"
+        required: false
+        default: "false"
+
+jobs:
+  enrich:
+    name: Enrich articles
+    runs-on: ubuntu-latest
+    timeout-minutes: 90   # 500 articles × ~10s each = ~83 min worst case
+
+    env:
+      SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      ENRICH_BATCH_SIZE:    ${{ github.event.inputs.batch_size || '500' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"   # matches ingestion workflows
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download spaCy model
+        # en_core_web_sm is installed as a pip package — cached between runs
+        run: python -m spacy download en_core_web_sm
+
+      - name: Run enrichment pipeline
+        run: |
+          FORCE_FLAG=""
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            FORCE_FLAG="--force"
+          fi
+          python enrich.py --batch-size $ENRICH_BATCH_SIZE $FORCE_FLAG

@@ -38,6 +38,7 @@ from pipeline.config import (
     FEED_COL_LAST_POLLED, FEED_COL_LAST_SUCCESS, FEED_COL_ARTICLES_FOUND,
     ART_COL_URL_HASH, ART_COL_FEED_ID, ART_COL_CRAWLED,
     CADENCE_POLL_INTERVALS,
+    ARTICLE_HARD_LIMIT, ARTICLE_PRUNE_TARGET,
 )
 
 log = logging.getLogger(__name__)
@@ -558,3 +559,66 @@ def log_run_finish(run_id: str | None, summary: dict) -> None:
 def log_run(summary: dict) -> None:
     """Backward-compat wrapper — used by tests. Prefer log_run_start/finish."""
     log_run_finish(None, summary)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ARTICLE TABLE SIZE CAP
+# ─────────────────────────────────────────────────────────────────────────────
+
+def prune_articles_if_needed() -> int:
+    """
+    Delete the oldest articles if the table exceeds ARTICLE_HARD_LIMIT (500K).
+    Prunes down to ARTICLE_PRUNE_TARGET (490K) so this doesn't fire every run.
+
+    Returns the number of articles deleted (0 if pruning was not needed).
+    Called once at the end of each pipeline run.
+    """
+    try:
+        # Step 1: Exact count (uses the primary key index — fast)
+        resp = (
+            get_client()
+            .table(TABLE_ARTICLES)
+            .select("id", count="exact")
+            .limit(1)
+            .execute()
+        )
+        total = resp.count or 0
+
+        if total <= ARTICLE_HARD_LIMIT:
+            log.debug("Article count %d — under %d limit, no pruning needed", total, ARTICLE_HARD_LIMIT)
+            return 0
+
+        excess = total - ARTICLE_PRUNE_TARGET
+        log.info(
+            "Article count %d exceeds %d — pruning %d oldest articles",
+            total, ARTICLE_HARD_LIMIT, excess,
+        )
+
+        # Step 2: Fetch IDs of the oldest articles by created_at
+        id_resp = (
+            get_client()
+            .table(TABLE_ARTICLES)
+            .select("id")
+            .order("created_at", desc=False)
+            .limit(excess)
+            .execute()
+        )
+        ids_to_delete = [row["id"] for row in (id_resp.data or [])]
+
+        if not ids_to_delete:
+            return 0
+
+        # Step 3: Delete in batches of 500 (safe PostgREST batch size)
+        deleted = 0
+        batch_size = 500
+        for i in range(0, len(ids_to_delete), batch_size):
+            batch = ids_to_delete[i:i + batch_size]
+            get_client().table(TABLE_ARTICLES).delete().in_("id", batch).execute()
+            deleted += len(batch)
+
+        log.info("Pruned %d articles — table now at ~%d rows", deleted, total - deleted)
+        return deleted
+
+    except Exception as e:
+        log.warning("prune_articles_if_needed failed: %s", e)
+        return 0
