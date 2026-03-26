@@ -113,9 +113,13 @@ def download_and_hash_image(image_url: str) -> int | None:
     try:
         image = Image.open(io.BytesIO(data)).convert("RGB")
         phash = imagehash.phash(image, hash_size=IMAGE_HASH_SIZE)
-        # imagehash returns an ImageHash object — convert to Python int
-        # The hash is stored as bigint in PostgreSQL
-        return int(str(phash), 16)
+        # imagehash returns an unsigned 64-bit integer (0 to 2^64-1).
+        # PostgreSQL bigint is SIGNED 64-bit (-2^63 to 2^63-1).
+        # Reinterpret the unsigned value as signed using two's complement:
+        #   values < 2^63 stay the same; values >= 2^63 wrap to negative.
+        # The bit pattern is preserved — Hamming distance comparisons still work.
+        unsigned = int(str(phash), 16)
+        return unsigned if unsigned < (1 << 63) else unsigned - (1 << 64)
 
     except Exception as e:
         log.debug("Image hashing failed: %s", e)
