@@ -60,6 +60,7 @@ import time
 from datetime import datetime, timezone
 
 from pipeline import db
+from pipeline.db import log_run_start, log_run_finish
 from pipeline.circuit_breaker import (
     check_dormancy, should_skip_feed, get_last_new_article_date,
     log_circuit_state,
@@ -329,78 +330,101 @@ async def run_pipeline(cadence: str | None = None, dry_run: bool = False) -> dic
 
     Returns a summary dict with counts of new articles, duplicates, errors.
     This summary is also written to the pipeline_runs table.
+
+    TWO-PHASE LOGGING:
+      A pipeline_runs row is written at the START of the run (before any feeds
+      are polled) so that GitHub Actions jobs killed by a timeout still produce
+      a visible record.  The row is updated with final stats in a finally block.
     """
     log.info("═══ Pipeline run start | cadence=%s | dry_run=%s ═══", cadence or "all", dry_run)
     run_start = time.perf_counter()
-
     loop = asyncio.get_event_loop()
 
-    # Load feeds due for polling
-    feeds = await loop.run_in_executor(None, db.get_due_feeds, cadence)
-    log.info("Loaded %d feeds due for polling", len(feeds))
-
-    if not feeds:
-        log.info("No feeds due — exiting early")
-        return {"cadence": cadence, "feeds": 0, "new": 0, "errors": 0}
-
-    # Shared semaphores
-    feed_sem    = asyncio.Semaphore(MAX_CONCURRENT_FEEDS)
-    article_sem = asyncio.Semaphore(MAX_CONCURRENT_ARTICLES)
-
-    # Shared SimHash set — near-dedup across all feeds in this run
-    seen_simhashes: set[int] = await loop.run_in_executor(
-        None, db.load_recent_simhashes
-    )
-    log.debug("Loaded %d recent simhashes for near-dedup", len(seen_simhashes))
-
-    # Launch all feed polls concurrently
-    tasks = [
-        poll_one_feed(feed, feed_sem, article_sem, seen_simhashes, loop)
-        for feed in feeds
-    ]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    # Aggregate stats
-    total_new      = 0
-    total_near_dups = 0
-    total_exact_dups = 0
-    total_errors   = 0
-    total_skipped  = 0
-
-    for r in results:
-        if isinstance(r, Exception):
-            total_errors += 1
-            log.error("Unhandled feed task error: %s", r)
-        else:
-            total_new       += r.get("new", 0)
-            total_near_dups += r.get("near_dups", 0)
-            total_exact_dups += r.get("exact_dups", 0)
-            total_errors    += r.get("errors", 0)
-            if r.get("skipped"):
-                total_skipped += 1
-
-    duration = round(time.perf_counter() - run_start, 2)
+    # ── WRITE START ROW immediately so a killed job still leaves a record ─────
+    run_id = None
+    if not dry_run:
+        run_id = await loop.run_in_executor(None, log_run_start, cadence, dry_run)
 
     summary = {
         "cadence":         cadence or "all",
-        "feeds_attempted": len(feeds),
-        "feeds_skipped":   total_skipped,
-        "new_articles":    total_new,
-        "near_duplicates": total_near_dups,
-        "exact_duplicates": total_exact_dups,
-        "errors":          total_errors,
-        "duration_s":      duration,
-        "run_at":          datetime.now(timezone.utc).isoformat(),
+        "feeds_attempted": 0,
+        "feeds_skipped":   0,
+        "new_articles":    0,
+        "near_duplicates": 0,
+        "exact_duplicates": 0,
+        "errors":          0,
+        "duration_s":      0.0,
         "dry_run":         dry_run,
     }
 
-    log.info(
-        "═══ Run complete | cadence=%s | %d new | %d near-dups | %d exact-dups | "
-        "%d errors | %.1fs ═══",
-        cadence or "all", total_new, total_near_dups, total_exact_dups, total_errors, duration,
-    )
+    try:
+        # Load feeds due for polling
+        feeds = await loop.run_in_executor(None, db.get_due_feeds, cadence)
+        log.info("Loaded %d feeds due for polling", len(feeds))
 
-    if not dry_run:
-        await loop.run_in_executor(None, db.log_run, summary)
+        if not feeds:
+            log.info("No feeds due — exiting early")
+            return summary
+
+        # Shared semaphores
+        feed_sem    = asyncio.Semaphore(MAX_CONCURRENT_FEEDS)
+        article_sem = asyncio.Semaphore(MAX_CONCURRENT_ARTICLES)
+
+        # Shared SimHash set — near-dedup across all feeds in this run
+        seen_simhashes: set[int] = await loop.run_in_executor(
+            None, db.load_recent_simhashes
+        )
+        log.debug("Loaded %d recent simhashes for near-dedup", len(seen_simhashes))
+
+        # Launch all feed polls concurrently
+        tasks = [
+            poll_one_feed(feed, feed_sem, article_sem, seen_simhashes, loop)
+            for feed in feeds
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Aggregate stats
+        total_new        = 0
+        total_near_dups  = 0
+        total_exact_dups = 0
+        total_errors     = 0
+        total_skipped    = 0
+
+        for r in results:
+            if isinstance(r, Exception):
+                total_errors += 1
+                log.error("Unhandled feed task error: %s", r)
+            else:
+                total_new        += r.get("new", 0)
+                total_near_dups  += r.get("near_dups", 0)
+                total_exact_dups += r.get("exact_dups", 0)
+                total_errors     += r.get("errors", 0)
+                if r.get("skipped"):
+                    total_skipped += 1
+
+        duration = round(time.perf_counter() - run_start, 2)
+
+        summary.update({
+            "feeds_attempted": len(feeds),
+            "feeds_skipped":   total_skipped,
+            "new_articles":    total_new,
+            "near_duplicates": total_near_dups,
+            "exact_duplicates": total_exact_dups,
+            "errors":          total_errors,
+            "duration_s":      duration,
+        })
+
+        log.info(
+            "═══ Run complete | cadence=%s | %d new | %d near-dups | %d exact-dups | "
+            "%d errors | %.1fs ═══",
+            cadence or "all", total_new, total_near_dups, total_exact_dups,
+            total_errors, duration,
+        )
+
+    finally:
+        # Always update the DB record — even if the run was killed or crashed
+        if not dry_run:
+            summary["duration_s"] = round(time.perf_counter() - run_start, 2)
+            await loop.run_in_executor(None, log_run_finish, run_id, summary)
 
     return summary

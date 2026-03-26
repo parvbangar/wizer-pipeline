@@ -468,24 +468,93 @@ def upsert_articles(rows: list[dict]) -> tuple[int, int]:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PIPELINE RUN LOGGING
+#
+# Two-phase design so a run is recorded even if the job is killed mid-way:
+#   1. log_run_start()  — called at the TOP of run_pipeline, before any feeds
+#                         Inserts a row immediately and returns its id
+#   2. log_run_finish() — called in a finally block at the END
+#                         Updates the row with final stats
+#
+# The cadence column may not exist in older DB schemas (migration Step 7).
+# We fall back to the tier column which has always been present.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def log_run(summary: dict) -> None:
+def log_run_start(cadence: str | None, dry_run: bool) -> str | None:
     """
-    Write a summary row to pipeline_runs after each run.
-    This gives you a history of every pipeline execution for monitoring.
+    Insert a row at the START of a pipeline run.
+    Returns the new row id (uuid) so log_run_finish can update it.
+    Returns None if the insert fails.
+    """
+    client = get_client()
+    cadence_val = cadence or "all"
+    payload = {
+        "tier":            cadence_val,
+        "feeds_attempted": 0,
+        "feeds_skipped":   0,
+        "new_articles":    0,
+        "near_duplicates": 0,
+        "exact_duplicates": 0,
+        "errors":          0,
+        "duration_s":      0.0,
+        "dry_run":         dry_run,
+    }
+    for attempt in range(2):
+        try:
+            row = dict(payload)
+            if attempt == 0:
+                row["cadence"] = cadence_val
+            resp = client.table(TABLE_RUNS).insert(row).execute()
+            run_id = (resp.data or [{}])[0].get("id")
+            log.info("pipeline_runs row created (id=%s, cadence=%s)", run_id, cadence_val)
+            return run_id
+        except Exception as e:
+            if attempt == 0 and "PGRST204" in str(e) and "cadence" in str(e):
+                log.debug("cadence column missing — retrying without it")
+                continue
+            log.error("log_run_start FAILED: %s", e)
+            return None
 
-    If the insert fails (e.g. missing column), logs an ERROR with the full
-    detail so it is visible in GitHub Actions — previously this was a silent
-    warning which made DB schema mismatches invisible.
+
+def log_run_finish(run_id: str | None, summary: dict) -> None:
     """
-    try:
-        get_client().table(TABLE_RUNS).insert(summary).execute()
-        log.debug("pipeline_runs row written: cadence=%s", summary.get("cadence"))
-    except Exception as e:
-        log.error(
-            "log_run FAILED — run not recorded in pipeline_runs. "
-            "Check that the 'cadence' column exists (run migration Step 7). "
-            "Error: %s | summary keys: %s",
-            e, list(summary.keys()),
-        )
+    Update the pipeline_runs row with final stats.
+    If run_id is None (start failed), falls back to a fresh insert.
+    """
+    client = get_client()
+    cadence_val = summary.get("cadence", "all")
+    payload = {
+        "tier":            cadence_val,
+        "feeds_attempted": summary.get("feeds_attempted", 0),
+        "feeds_skipped":   summary.get("feeds_skipped", 0),
+        "new_articles":    summary.get("new_articles", 0),
+        "near_duplicates": summary.get("near_duplicates", 0),
+        "exact_duplicates": summary.get("exact_duplicates", 0),
+        "errors":          summary.get("errors", 0),
+        "duration_s":      summary.get("duration_s", 0.0),
+        "dry_run":         summary.get("dry_run", False),
+    }
+    for attempt in range(2):
+        try:
+            row = dict(payload)
+            if attempt == 0:
+                row["cadence"] = cadence_val
+            if run_id:
+                client.table(TABLE_RUNS).update(row).eq("id", run_id).execute()
+            else:
+                client.table(TABLE_RUNS).insert(row).execute()
+            log.info(
+                "pipeline_runs updated — cadence=%s new=%d errors=%d duration=%.1fs",
+                cadence_val, payload["new_articles"], payload["errors"], payload["duration_s"],
+            )
+            return
+        except Exception as e:
+            if attempt == 0 and "PGRST204" in str(e) and "cadence" in str(e):
+                log.debug("cadence column missing — retrying without it")
+                continue
+            log.error("log_run_finish FAILED: %s", e)
+            return
+
+
+def log_run(summary: dict) -> None:
+    """Backward-compat wrapper — used by tests. Prefer log_run_start/finish."""
+    log_run_finish(None, summary)

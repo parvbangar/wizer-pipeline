@@ -1,1 +1,13 @@
 .DS_Store
+
+# ── Secrets — NEVER commit these ──────────────────────────────────────────────
+.env
+.env.*
+.env.local
+*.env
+.env/
+credentials.rtf
+credentials.json
+*.pem
+*.key
+secrets/
