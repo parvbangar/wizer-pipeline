@@ -15,9 +15,11 @@ name: Layer 2 — Metadata Enrichment
 #   24 runs × 4,000 articles = ~96,000 articles/day
 #
 # MODELS USED (downloaded once, cached between runs):
-#   mDeBERTa-v3-base-mnli-xnli  (~560 MB) — zero-shot category classification
-#   sentence-transformers/LaBSE (~471 MB) — multilingual story clustering
-#   en_core_web_sm + xx_ent_wiki_sm       — NER for entity tagging
+#   mDeBERTa-v3-base-mnli-xnli         (~560 MB) — zero-shot category classification
+#   sentence-transformers/LaBSE        (~471 MB) — multilingual story clustering
+#   distilbert-multilingual-sentiments (~268 MB) — multilingual sentiment (replaces VADER)
+#   ai4bharat/IndicNER                 (~500 MB) — Indian language NER
+#   en_core_web_sm + xx_ent_wiki_sm               — English + multilingual NER fallback
 #
 # COST: $0 — GitHub Actions is FREE for public repositories.
 #
@@ -83,7 +85,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /home/runner/.cache/huggingface
-          key: hf-models-deberta-labse-v1
+          key: hf-models-deberta-labse-sentiment-indic-v1
           restore-keys: hf-models-deberta-labse-
 
       # ── Install PyTorch CPU-only BEFORE requirements.txt ─────────────────────
@@ -101,17 +103,21 @@ jobs:
           python -m spacy download xx_ent_wiki_sm
 
       # ── Pre-download HuggingFace models (populates cache on first run) ────────
-      # On cache hit this is instant. On first run it downloads ~1 GB once.
+      # On cache hit this is instant. On first run downloads ~1.8 GB total once.
       - name: Pre-download ML models
         run: |
           python -c "
           from transformers import pipeline
           from sentence_transformers import SentenceTransformer
-          print('Downloading mDeBERTa...')
+          print('Downloading mDeBERTa (~560 MB)...')
           pipeline('zero-shot-classification', model='MoritzLaurer/mDeBERTa-v3-base-mnli-xnli', device=-1)
-          print('Downloading LaBSE...')
+          print('Downloading LaBSE (~471 MB)...')
           SentenceTransformer('sentence-transformers/LaBSE')
-          print('Models ready.')
+          print('Downloading multilingual sentiment (~268 MB)...')
+          pipeline('text-classification', model='lxyuan/distilbert-base-multilingual-cased-sentiments-student', device=-1)
+          print('Downloading IndicNER (~500 MB)...')
+          pipeline('ner', model='ai4bharat/IndicNER', aggregation_strategy='simple', device=-1)
+          print('All models ready.')
           "
 
       - name: Run enrichment pipeline

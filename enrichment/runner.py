@@ -60,6 +60,7 @@ from enrichment.steps.keywords    import extract_keywords
 from enrichment.steps.classifier  import classify_article
 from enrichment.steps.images      import download_and_hash_image
 from enrichment.steps.clustering  import find_or_create_cluster
+from enrichment.steps.propensity  import compute_propensity
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +168,19 @@ def enrich_one(
             update["cluster_id"] = cluster_id
     except Exception as e:
         log.warning("[%s] clustering failed: %s", article_id[:8], e)
+
+    # ── Step 9: Propensity scoring ────────────────────────────────────────────
+    try:
+        propensity_score = compute_propensity(
+            article         = article,
+            update          = update,
+            entities        = entities,
+            cluster_payload = cluster_payload,
+            cluster_action  = cluster_action,
+        )
+        update["propensity_score"] = propensity_score
+    except Exception as e:
+        log.warning("[%s] propensity scoring failed: %s", article_id[:8], e)
 
     return update, entities, cluster_payload, cluster_action
 

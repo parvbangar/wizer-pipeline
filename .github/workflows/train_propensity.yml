@@ -1,0 +1,91 @@
+name: Train Propensity Model
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WHEN DOES THIS RUN?
+#   Every Sunday at 02:00 UTC (7:30 IST) — low-traffic window.
+#   Also triggerable manually with custom min_rows.
+#
+# WHAT IT DOES:
+#   1. Fetches all enriched articles + their cluster outlet_count from Supabase
+#   2. Trains a LightGBM regression model on log(1 + outlet_count)
+#   3. Saves the model to models/propensity_model.lgb
+#   4. Commits and pushes the updated model to main
+#
+# SELF-SUPERVISED LABEL:
+#   outlet_count = how many outlets reported the same story
+#   High value = genuinely important news (PTI wire hits 50+ outlets)
+#   Low value  = niche or unique story
+#   No human labelling needed — the wire syndication pattern is the label.
+#
+# MODEL LIFECYCLE:
+#   The enrichment pipeline loads models/propensity_model.lgb at startup.
+#   If the file is missing (first run), it falls back to the weighted formula.
+#   After the first weekly training, Phase 2 (LightGBM) takes over automatically.
+#
+# REQUIREMENTS:
+#   Minimum 500 enriched articles with cluster assignments.
+#   Model training will be skipped if data is insufficient.
+# ─────────────────────────────────────────────────────────────────────────────
+on:
+  schedule:
+    - cron: "0 2 * * 0"   # every Sunday at 02:00 UTC
+  workflow_dispatch:
+    inputs:
+      min_rows:
+        description: "Minimum training rows required (default: 500)"
+        required: false
+        default: "500"
+
+jobs:
+  train:
+    name: Train propensity model
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    permissions:
+      contents: write   # needed to commit + push the model file
+
+    env:
+      SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install supabase python-dotenv lightgbm numpy scikit-learn
+
+      - name: Train propensity model
+        run: |
+          MIN_ROWS="${{ github.event.inputs.min_rows || '500' }}"
+          python train_propensity.py --min-rows "$MIN_ROWS" --output models/propensity_model.lgb
+
+      - name: Commit and push updated model
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Check if model file was created/updated
+          if [ ! -f "models/propensity_model.lgb" ]; then
+            echo "Model file not created (insufficient data?) — nothing to commit"
+            exit 0
+          fi
+
+          git add models/propensity_model.lgb
+          if git diff --cached --quiet; then
+            echo "Model unchanged — nothing to commit"
+            exit 0
+          fi
+
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
+          git commit -m "chore: update propensity model ($TIMESTAMP)"
+          git push origin HEAD:main

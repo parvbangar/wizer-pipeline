@@ -97,7 +97,7 @@ LANG_DETECT_MIN_CHARS = 20
 #   Below this → return 'general'. Prevents low-confidence mislabelling.
 # ─────────────────────────────────────────────────────────────────────────────
 DEBERTA_MODEL               = os.getenv("DEBERTA_MODEL", "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli")
-CLASSIFY_CONFIDENCE_THRESHOLD = float(os.getenv("CLASSIFY_CONFIDENCE_THRESHOLD", "0.40"))
+CLASSIFY_CONFIDENCE_THRESHOLD = float(os.getenv("CLASSIFY_CONFIDENCE_THRESHOLD", "0.30"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -125,12 +125,14 @@ CLUSTER_EMBEDDING_THRESHOLD = float(os.getenv("CLUSTER_EMBEDDING_THRESHOLD", "0.
 # ─────────────────────────────────────────────────────────────────────────────
 SPACY_MODEL              = os.getenv("SPACY_MODEL",             "en_core_web_sm")
 SPACY_MULTILINGUAL_MODEL = os.getenv("SPACY_MULTILINGUAL_MODEL", "xx_ent_wiki_sm")
+INDIC_NER_MODEL          = os.getenv("INDIC_NER_MODEL",          "ai4bharat/IndicNER")
 NER_MIN_SALIENCE         = 0.1
 #
-# Two models are used based on detected language:
+# Three models are used based on detected language:
 #   en_core_web_sm  — English articles (highest accuracy on English news)
-#   xx_ent_wiki_sm  — All Indian regional languages: hi, ta, te, bn, mr, gu,
-#                     kn, ml, pa, ur, etc. Trained on Wikipedia across 50+ languages.
+#   ai4bharat/IndicNER — Indian regional languages: hi, bn, gu, kn, ml, mr,
+#                        or, pa, ta, te, as, ur — trained on Naamapadam dataset
+#   xx_ent_wiki_sm  — Fallback multilingual spaCy (if IndicNER unavailable)
 #
 # Download commands:
 #   python -m spacy download en_core_web_sm
@@ -475,13 +477,57 @@ CLUSTER_WINDOW_HOURS        = int(os.getenv("CLUSTER_WINDOW_HOURS", "48"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP: SENTIMENT ANALYSIS (VADER)
+# STEP: SENTIMENT ANALYSIS (multilingual transformer)
 #
-# VADER is English-only. For non-English articles (Hindi, Tamil, etc.)
-# sentiment and sentiment_score are stored as NULL.
-# Upgrade path: replace with a multilingual model (XLM-R, MuRIL) later.
+# Model: lxyuan/distilbert-base-multilingual-cased-sentiments-student
+#   - Multilingual: EN, Hindi, Tamil, Telugu, Bengali, and 100+ others
+#   - ~268 MB, CPU-fast (distilled from mDeBERTa)
+#   - Upgrade from VADER: Hindi/Tamil/Telugu articles now get sentiment
+#     instead of NULL — covers the 40-50% of our corpus that was skipped
+#
+# sentiment_score = positive_prob - negative_prob → −1.0 to +1.0
+# (matches VADER compound score semantics for backward compatibility)
 # ─────────────────────────────────────────────────────────────────────────────
-SENTIMENT_POSITIVE_THRESHOLD =  0.05   # compound score above this = positive
-SENTIMENT_NEGATIVE_THRESHOLD = -0.05   # compound score below this = negative
-# Between these thresholds = neutral
-SENTIMENT_ENGLISH_ONLY_LANGS = {"en", "en-us", "en-gb", "en-in"}
+SENTIMENT_MULTILINGUAL_MODEL = os.getenv(
+    "SENTIMENT_MULTILINGUAL_MODEL",
+    "lxyuan/distilbert-base-multilingual-cased-sentiments-student",
+)
+SENTIMENT_POSITIVE_THRESHOLD =  0.05
+SENTIMENT_NEGATIVE_THRESHOLD = -0.05
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP: PROPENSITY SCORING
+#
+# Estimates how likely an article is to go viral / drive user engagement.
+#
+# Phase 1 (immediate): weighted formula using outlet_count, category, entities
+# Phase 2 (weekly):    LightGBM model trained on outlet_count as self-supervised
+#                      label. Model file replaces the formula when present.
+#
+# Self-supervised training signal:
+#   outlet_count on article_clusters = how many outlets reported the same story
+#   High outlet_count → genuinely important news (wire syndication pattern)
+#   Low outlet_count → niche or unique story
+#
+# PROPENSITY_MODEL_PATH: path to trained LightGBM .lgb model file
+# PROPENSITY_MAX_OUTLET_COUNT: log-normalization cap for outlet virality signal
+# ─────────────────────────────────────────────────────────────────────────────
+PROPENSITY_MODEL_PATH       = os.getenv("PROPENSITY_MODEL_PATH", "models/propensity_model.lgb")
+PROPENSITY_MAX_OUTLET_COUNT = 50   # log(1+50) ≈ 3.93 — normalization denominator
+
+PROPENSITY_CATEGORY_WEIGHTS: dict[str, float] = {
+    "cricket":       0.90,
+    "politics":      0.85,
+    "business":      0.75,
+    "entertainment": 0.70,
+    "technology":    0.70,
+    "sports":        0.70,
+    "health":        0.65,
+    "world":         0.65,
+    "crime":         0.60,
+    "education":     0.55,
+    "environment":   0.55,
+    "crypto":        0.50,
+    "general":       0.30,
+}
