@@ -49,9 +49,15 @@ def get_client() -> Client:
 # READING: FETCH ARTICLES TO ENRICH
 # ─────────────────────────────────────────────────────────────────────────────
 
+_PAGE_SIZE = 1000   # Supabase PostgREST hard limit per request
+
+
 def fetch_unenriched_batch(limit: int, offset: int = 0) -> list[dict]:
     """
     Fetch a batch of articles that haven't been enriched yet.
+
+    Paginates internally in chunks of 1,000 to work around Supabase's
+    PostgREST default max-rows limit without requiring dashboard changes.
 
     QUERY LOGIC:
       - enriched_at IS NULL       → not yet processed by Layer 2
@@ -66,51 +72,72 @@ def fetch_unenriched_batch(limit: int, offset: int = 0) -> list[dict]:
     Returns a list of article dicts with all columns needed by the enrichment steps.
     Returns an empty list if something goes wrong (pipeline continues).
     """
-    try:
-        resp = (
-            get_client()
-            .table(TABLE_ARTICLES)
-            .select(
-                "id, title, description, full_text, top_image_url, "
-                "url, domain, language_code, country_code, "
-                "published_at, iab_tier1, iab_tier2"
+    results: list[dict] = []
+    fetched = 0
+    while fetched < limit:
+        page_size = min(_PAGE_SIZE, limit - fetched)
+        page_offset = offset + fetched
+        try:
+            resp = (
+                get_client()
+                .table(TABLE_ARTICLES)
+                .select(
+                    "id, title, description, full_text, top_image_url, "
+                    "url, domain, language_code, country_code, "
+                    "published_at, iab_tier1, iab_tier2"
+                )
+                .is_("enriched_at", "null")
+                .eq("is_crawled", True)
+                .not_.is_("title", "null")
+                .order("published_at", desc=True)
+                .range(page_offset, page_offset + page_size - 1)
+                .execute()
             )
-            .is_("enriched_at", "null")
-            .eq("is_crawled", True)            # only articles with full text fetched
-            .not_.is_("title", "null")         # skip articles with no title
-            .order("published_at", desc=True)
-            .range(offset, offset + limit - 1)
-            .execute()
-        )
-        return resp.data or []
-    except Exception as e:
-        log.error("fetch_unenriched_batch failed: %s", e)
-        return []
+        except Exception as e:
+            log.error("fetch_unenriched_batch failed at offset %d: %s", page_offset, e)
+            break
+        page = resp.data or []
+        results.extend(page)
+        fetched += len(page)
+        if len(page) < page_size:
+            break   # no more rows
+    return results
 
 
 def fetch_unenriched_batch_forced(limit: int, offset: int = 0) -> list[dict]:
     """
     Same as fetch_unenriched_batch but fetches ALL articles (including already
     enriched ones). Used when --force flag is passed to re-enrich everything.
+    Paginates internally in chunks of 1,000.
     """
-    try:
-        resp = (
-            get_client()
-            .table(TABLE_ARTICLES)
-            .select(
-                "id, title, description, full_text, top_image_url, "
-                "url, domain, language_code, country_code, "
-                "published_at, iab_tier1, iab_tier2"
+    results: list[dict] = []
+    fetched = 0
+    while fetched < limit:
+        page_size = min(_PAGE_SIZE, limit - fetched)
+        page_offset = offset + fetched
+        try:
+            resp = (
+                get_client()
+                .table(TABLE_ARTICLES)
+                .select(
+                    "id, title, description, full_text, top_image_url, "
+                    "url, domain, language_code, country_code, "
+                    "published_at, iab_tier1, iab_tier2"
+                )
+                .not_.is_("title", "null")
+                .order("published_at", desc=True)
+                .range(page_offset, page_offset + page_size - 1)
+                .execute()
             )
-            .not_.is_("title", "null")
-            .order("published_at", desc=True)
-            .range(offset, offset + limit - 1)
-            .execute()
-        )
-        return resp.data or []
-    except Exception as e:
-        log.error("fetch_unenriched_batch_forced failed: %s", e)
-        return []
+        except Exception as e:
+            log.error("fetch_unenriched_batch_forced failed at offset %d: %s", page_offset, e)
+            break
+        page = resp.data or []
+        results.extend(page)
+        fetched += len(page)
+        if len(page) < page_size:
+            break
+    return results
 
 
 # ─────────────────────────────────────────────────────────────────────────────
