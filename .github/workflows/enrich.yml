@@ -52,15 +52,18 @@ jobs:
     strategy:
       fail-fast: false      # if one shard fails, let the other keep running
       matrix:
-        shard: [0, 1]       # 2 parallel shards per trigger
+        include:
+          - shard: 0
+            offset: 0
+          - shard: 1
+            offset: 2000
 
     env:
       SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
       ENRICH_BATCH_SIZE:    ${{ github.event.inputs.batch_size || '2000' }}
-      # Shard 0 → offset 0, Shard 1 → offset 2000
-      # Formula: shard × batch_size
-      ENRICH_OFFSET:        ${{ matrix.shard * 2000 }}
+      # Shard 0 → offset 0, Shard 1 → offset 2000 (explicit, no arithmetic)
+      ENRICH_OFFSET:        ${{ matrix.offset }}
       # Tell HuggingFace where to cache models (matches our cache step below)
       HF_HOME:              /home/runner/.cache/huggingface
 
