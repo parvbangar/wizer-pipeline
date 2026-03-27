@@ -145,7 +145,7 @@ def enrich_one(
 
     # ── Step 6: Category classification ──────────────────────────────────────
     try:
-        category = classify_article(title, description, article.get("iab_tier1") or "")
+        category = classify_article(title, description, article.get("iab_tier1") or "", full_text)
         update["category"] = category
     except Exception as e:
         log.warning("[%s] classifier failed: %s", article_id[:8], e)
@@ -168,9 +168,8 @@ def enrich_one(
     cluster_action  = "skip"
     try:
         cluster_id, cluster_payload, cluster_action = find_or_create_cluster(
-            article    = article,
-            entities   = entities,
-            title_simhash = None,    # see TODO above
+            article         = article,
+            entities        = entities,    # used for entity_set/top_entities display
             recent_clusters = recent_clusters,
         )
         if cluster_id:

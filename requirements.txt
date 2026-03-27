@@ -22,16 +22,30 @@ mmh3==4.1.0                  # MurmurHash3 — fast 64-bit URL fingerprinting
 python-dotenv==1.0.1         # loads .env file
 
 # ── Layer 2: Enrichment ───────────────────────────────────────────────────────
+# NOTE: torch is installed separately in enrich.yml with --index-url for CPU-only
+# (200 MB) to avoid the 2 GB CUDA wheel. These packages depend on torch but
+# won't re-download it if torch is already installed when pip runs.
 
-# Language detection — 55 languages including Hindi, Tamil, Telugu etc.
-langdetect==1.0.9
+# Language detection — accurate, deterministic, supports all Indian regional languages
+# Replaces langdetect which was non-deterministic (same text → different results)
+lingua-language-detector>=2.0.0
 
 # Named Entity Recognition — requires model download after install:
 #   python -m spacy download en_core_web_sm
+#   python -m spacy download xx_ent_wiki_sm
 spacy==3.8.13
 
 # Keyword extraction — unsupervised, language-agnostic, no model download
 yake==0.4.8
+
+# Category classification — multilingual zero-shot NLI (mDeBERTa)
+# Model: MoritzLaurer/mDeBERTa-v3-base-mnli-xnli (~560 MB, cached after first run)
+transformers>=4.40.0
+
+# Story clustering — multilingual sentence embeddings (LaBSE by Google)
+# Model: sentence-transformers/LaBSE (~471 MB, cached after first run)
+# Supports all Indian languages: hi, ta, te, bn, mr, gu, kn, ml, pa, ur
+sentence-transformers>=3.0.0
 
 # Sentiment analysis — English news headlines (VADER)
 vaderSentiment==3.3.2

@@ -83,6 +83,46 @@ LANG_DETECT_MIN_CHARS = 20
 #   Keeps the article_entities table lean — filters out
 #   incidental mentions like "he said", "the company", etc.
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# CATEGORY CLASSIFICATION — mDeBERTa zero-shot NLI
+#
+# Model: MoritzLaurer/mDeBERTa-v3-base-mnli-xnli
+#   - State-of-the-art multilingual NLI model
+#   - Understands all Indian regional languages natively
+#   - Zero-shot: no training data needed, just define category labels
+#   - ~560 MB download, cached in ~/.cache/huggingface/hub after first run
+#
+# CLASSIFY_CONFIDENCE_THRESHOLD:
+#   Minimum score from the model to accept a category.
+#   Below this → return 'general'. Prevents low-confidence mislabelling.
+# ─────────────────────────────────────────────────────────────────────────────
+DEBERTA_MODEL               = os.getenv("DEBERTA_MODEL", "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli")
+CLASSIFY_CONFIDENCE_THRESHOLD = float(os.getenv("CLASSIFY_CONFIDENCE_THRESHOLD", "0.40"))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STORY CLUSTERING — LaBSE sentence embeddings
+#
+# Model: sentence-transformers/LaBSE (Language-Agnostic BERT Sentence Embeddings)
+#   - Google's model trained on 109 languages
+#   - Explicitly supports ALL major Indian languages
+#   - Produces 768-dim normalised embeddings
+#   - Two articles about the same event in Hindi and English will have
+#     cosine similarity > 0.85 even with zero word overlap
+#   - ~471 MB download, cached after first run
+#
+# CLUSTER_EMBEDDING_THRESHOLD:
+#   Cosine similarity above which two articles are considered the same story.
+#   LaBSE scores are higher than traditional methods — 0.82 is well calibrated
+#   for Indian news wire syndication (same PTI story, different outlets).
+# ─────────────────────────────────────────────────────────────────────────────
+LABSE_MODEL                 = os.getenv("LABSE_MODEL", "sentence-transformers/LaBSE")
+CLUSTER_EMBEDDING_THRESHOLD = float(os.getenv("CLUSTER_EMBEDDING_THRESHOLD", "0.82"))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NER (spaCy) — kept for entity extraction (tagging, display, app layer)
+# ─────────────────────────────────────────────────────────────────────────────
 SPACY_MODEL              = os.getenv("SPACY_MODEL",             "en_core_web_sm")
 SPACY_MULTILINGUAL_MODEL = os.getenv("SPACY_MULTILINGUAL_MODEL", "xx_ent_wiki_sm")
 NER_MIN_SALIENCE         = 0.1
@@ -143,13 +183,19 @@ KEYWORD_DEDUP_THRESHOLD  = 0.9
 # Category priority: categories listed first win on ties.
 # ─────────────────────────────────────────────────────────────────────────────
 CATEGORY_RULES: dict[str, list[str]] = {
+    # ── Cricket ───────────────────────────────────────────────────────────────
+    # "odi" removed — matches "commodity". Use "one day international" instead.
+    # "t20" kept — \b boundary makes it safe (won't match inside other words).
     "cricket": [
         # English
-        "ipl", "bcci", "cricket", "test match", "odi", "t20", "virat kohli",
-        "rohit sharma", "ms dhoni", "sachin", "batting", "bowling", "wicket",
-        "innings", "run chase", "century", "world cup cricket",
+        "ipl", "bcci", "cricket", "test match", "one day international", "t20",
+        "virat kohli", "rohit sharma", "ms dhoni", "sachin tendulkar",
+        "batting", "bowling", "wicket", "innings", "run chase", "century",
+        "world cup cricket", "ranji trophy", "super over", "duck out",
+        "twenty20", "powerplay",
         # Hindi (Devanagari)
-        "क्रिकेट", "आईपीएल", "बीसीसीआई", "विराट", "रोहित", "धोनी", "बल्लेबाज", "गेंदबाज",
+        "क्रिकेट", "आईपीएल", "बीसीसीआई", "विराट कोहली", "रोहित शर्मा",
+        "धोनी", "बल्लेबाज", "गेंदबाज", "विकेट",
         # Tamil
         "கிரிக்கெட்", "ஐபிஎல்",
         # Telugu
@@ -159,13 +205,40 @@ CATEGORY_RULES: dict[str, list[str]] = {
         # Marathi
         "क्रिकेट", "आयपीएल",
     ],
+
+    # ── Crypto ────────────────────────────────────────────────────────────────
+    # Separate category — crypto/blockchain is a major news vertical.
+    # Must come before business/technology to win on tie-breaks.
+    "crypto": [
+        # English
+        "bitcoin", "ethereum", "binance", "cryptocurrency", "crypto",
+        "blockchain", "defi", "nft", "web3", "altcoin", "stablecoin",
+        "usdt", "bnb", "btc", "eth", "solana", "ripple", "xrp", "dogecoin",
+        "coinbase", "crypto wallet", "crypto exchange", "digital currency",
+        "decentralized", "mining rig", "proof of stake", "proof of work",
+        "ledger nano", "metamask", "uniswap", "airdrop", "token listing",
+        "bull run", "bear market crypto", "halving", "satoshi",
+        # Hindi (Devanagari)
+        "बिटकॉइन", "क्रिप्टो", "ब्लॉकचेन", "क्रिप्टोकरेंसी",
+        # Tamil
+        "கிரிப்டோ", "பிட்காயின்",
+        # Telugu
+        "క్రిప్టో", "బిట్‌కాయిన్",
+        # Bengali
+        "ক্রিপ্টো", "বিটকয়েন",
+    ],
+
+    # ── Politics ──────────────────────────────────────────────────────────────
+    # Removed "cm " and "mp " (trailing spaces replaced by \b word boundaries)
+    # "cm" and "mp" kept — \b now prevents "income", "trump" false matches.
     "politics": [
         # English
         "bjp", "congress", "aap", "modi", "rahul gandhi", "parliament",
-        "lok sabha", "rajya sabha", "election", "cm ", "chief minister",
-        "minister", "mla", "mp ", "governor", "president of india",
+        "lok sabha", "rajya sabha", "election", "chief minister", "cm",
+        "minister", "mla", "mp", "governor", "president of india",
         "political party", "vote", "constituency", "bypoll", "cabinet",
-        "nda", "upa", "indi alliance",
+        "nda", "upa", "indi alliance", "assembly election", "general election",
+        "exit poll", "voter turnout", "opposition party",
         # Hindi (Devanagari)
         "भाजपा", "कांग्रेस", "चुनाव", "संसद", "प्रधानमंत्री", "मुख्यमंत्री",
         "राज्यसभा", "लोकसभा", "सरकार", "राजनीति", "मतदान", "विपक्ष",
@@ -176,18 +249,22 @@ CATEGORY_RULES: dict[str, list[str]] = {
         # Bengali
         "নির্বাচন", "সংসদ", "রাজনীতি", "বিজেপি",
         # Marathi
-        "निवडणूक", "संसद", "राजकारण",
+        "निवडणूक", "राजकारण",
     ],
+
+    # ── Business ──────────────────────────────────────────────────────────────
     "business": [
         # English
         "sensex", "nse", "bse", "nifty", "rbi", "rupee", "gdp", "inflation",
         "stock market", "shares", "ipo", "sebi", "mutual fund", "revenue",
-        "profit", "quarterly results", "startup", "unicorn", "funding",
-        "acquisition", "merger", "budget", "fiscal", "import", "export",
-        "gst", "trade", "economic", "economy", "retail", "fdi",
+        "profit", "quarterly results", "unicorn", "funding round",
+        "acquisition", "merger", "fiscal deficit", "import", "export",
+        "gst", "trade deal", "economic growth", "economy", "retail sales",
+        "foreign investment", "interest rate", "repo rate", "balance sheet",
+        "earnings report", "market cap",
         # Hindi (Devanagari)
         "शेयर बाजार", "अर्थव्यवस्था", "बजट", "रुपया", "महंगाई", "व्यापार",
-        "निवेश", "कंपनी", "बाजार", "आर्थिक",
+        "निवेश", "आर्थिक",
         # Tamil
         "பங்கு சந்தை", "பொருளாதாரம்", "வணிகம்",
         # Telugu
@@ -195,12 +272,16 @@ CATEGORY_RULES: dict[str, list[str]] = {
         # Bengali
         "শেয়ার বাজার", "অর্থনীতি", "ব্যবসা",
     ],
+
+    # ── Entertainment ─────────────────────────────────────────────────────────
     "entertainment": [
         # English
         "bollywood", "box office", "film", "movie", "actor", "actress",
-        "director", "ott", "netflix", "amazon prime", "hotstar", "web series",
-        "music", "album", "song", "celebrity", "award", "filmfare",
-        "srk", "shah rukh", "salman", "deepika", "ranveer", "alia",
+        "director", "ott platform", "netflix", "amazon prime", "hotstar",
+        "web series", "music album", "song release", "celebrity", "award",
+        "filmfare", "shah rukh khan", "salman khan", "deepika padukone",
+        "ranveer singh", "alia bhatt", "kollywood", "tollywood", "mollywood",
+        "trailer launch", "box office collection",
         # Hindi (Devanagari)
         "बॉलीवुड", "फिल्म", "अभिनेता", "अभिनेत्री", "संगीत", "पुरस्कार",
         "सिनेमा", "वेब सीरीज", "गाना",
@@ -211,14 +292,20 @@ CATEGORY_RULES: dict[str, list[str]] = {
         # Bengali
         "চলচ্চিত্র", "সিনেমা", "অভিনেতা", "সংগীত",
         # Marathi
-        "चित्रपट", "सिनेमा", "अभिनेता",
+        "चित्रपट", "अभिनेता",
     ],
+
+    # ── Technology ────────────────────────────────────────────────────────────
+    # Removed "ai " and "app " (trailing spaces). "ai" and "app" with \b are safe.
+    # Removed "tech " — "tech" with \b is fine and more precise.
     "technology": [
         # English
-        "artificial intelligence", "ai ", "machine learning", "startup",
-        "tech ", "software", "app ", "smartphone", "5g", "cyber", "hack",
-        "data breach", "isro", "satellite", "space", "elon musk",
-        "google", "meta", "apple", "microsoft", "amazon", "chip",
+        "artificial intelligence", "machine learning", "deep learning",
+        "tech startup", "software", "smartphone", "5g network", "cybersecurity",
+        "data breach", "isro", "satellite launch", "space mission",
+        "elon musk", "google", "meta", "apple", "microsoft", "nvidia",
+        "semiconductor", "chip shortage", "generative ai", "chatgpt", "openai",
+        "app store", "android", "ios", "electric vehicle", "ev",
         # Hindi (Devanagari)
         "तकनीक", "कृत्रिम बुद्धिमत्ता", "मोबाइल", "इंटरनेट", "साइबर",
         "अंतरिक्ष", "उपग्रह",
@@ -227,12 +314,15 @@ CATEGORY_RULES: dict[str, list[str]] = {
         # Telugu
         "సాంకేతికత", "కృత్రిమ మేధస్సు", "విజ్ఞానం",
     ],
+
+    # ── Sports (non-cricket) ──────────────────────────────────────────────────
     "sports": [
         # English
         "football", "fifa", "isl", "hockey", "badminton", "tennis",
         "olympics", "commonwealth games", "asian games", "wrestling",
-        "kabaddi", "pro kabaddi", "formula 1", "f1", "chess", "athlete",
-        "gold medal", "silver medal",
+        "kabaddi", "pro kabaddi", "formula 1", "grand prix", "chess",
+        "athlete", "gold medal", "silver medal", "bronze medal",
+        "nba", "isl league", "premier league", "champions league",
         # Hindi (Devanagari)
         "खेल", "फुटबॉल", "हॉकी", "बैडमिंटन", "कुश्ती", "कबड्डी",
         "ओलंपिक", "स्वर्ण पदक", "रजत पदक",
@@ -243,14 +333,20 @@ CATEGORY_RULES: dict[str, list[str]] = {
         # Bengali
         "খেলাধুলা", "ফুটবল", "হকি",
     ],
+
+    # ── Health ────────────────────────────────────────────────────────────────
+    # Removed "who " (trailing space). "who" with \b matches "WHO" standalone.
+    # Removed "drug" — too ambiguous. Use "drug trial", "pharmaceutical" instead.
     "health": [
         # English
-        "hospital", "doctor", "medicine", "disease", "covid", "vaccine",
-        "health ministry", "aiims", "cancer", "diabetes", "surgery",
-        "outbreak", "epidemic", "who ", "drug", "clinical trial", "patient",
+        "hospital", "doctor", "medicine", "disease outbreak", "covid",
+        "vaccine", "health ministry", "aiims", "cancer", "diabetes",
+        "surgery", "epidemic", "pandemic", "WHO", "clinical trial",
+        "patient", "pharmaceutical", "health insurance", "mental health",
+        "dengue", "malaria", "tuberculosis", "ayushman bharat",
         # Hindi (Devanagari)
-        "स्वास्थ्य", "अस्पताल", "डॉक्टर", "बीमारी", "दवा", "कोविड",
-        "टीका", "इलाज", "मरीज",
+        "स्वास्थ्य", "अस्पताल", "डॉक्टर", "बीमारी", "दवाई", "कोविड",
+        "टीकाकरण", "इलाज", "मरीज",
         # Tamil
         "சுகாதாரம்", "மருத்துவமனை", "மருத்துவர்", "நோய்",
         # Telugu
@@ -258,11 +354,14 @@ CATEGORY_RULES: dict[str, list[str]] = {
         # Bengali
         "স্বাস্থ্য", "হাসপাতাল", "ডাক্তার", "রোগ",
     ],
+
+    # ── Education ─────────────────────────────────────────────────────────────
     "education": [
         # English
         "school", "college", "university", "jee", "neet", "upsc", "ias",
         "board exam", "cbse", "icse", "ugc", "iit", "iim", "scholarship",
-        "syllabus", "admission", "student", "education policy", "nep",
+        "syllabus", "admission", "student protest", "education policy", "nep",
+        "exam result", "entrance exam", "higher education",
         # Hindi (Devanagari)
         "शिक्षा", "स्कूल", "कॉलेज", "परीक्षा", "विश्वविद्यालय", "छात्र",
         "प्रवेश", "छात्रवृत्ति",
@@ -273,12 +372,15 @@ CATEGORY_RULES: dict[str, list[str]] = {
         # Bengali
         "শিক্ষা", "স্কুল", "কলেজ", "পরীক্ষা",
     ],
+
+    # ── Crime ─────────────────────────────────────────────────────────────────
+    # Removed "ed " (trailing space). "ed" with \b matches standalone "ED".
     "crime": [
         # English
         "murder", "rape", "assault", "arrested", "police", "fir", "court",
         "judge", "verdict", "convicted", "bail", "chargesheet", "cbi",
-        "ed ", "enforcement directorate", "scam", "fraud", "crime",
-        "gangster", "kidnap", "robbery",
+        "enforcement directorate", "scam", "fraud", "gangster", "kidnap",
+        "robbery", "terrorist", "accused", "crime scene", "death penalty",
         # Hindi (Devanagari)
         "हत्या", "गिरफ्तार", "पुलिस", "अदालत", "बलात्कार", "धोखाधड़ी",
         "अपराध", "जमानत", "गैंगस्टर", "अपहरण",
@@ -289,15 +391,18 @@ CATEGORY_RULES: dict[str, list[str]] = {
         # Bengali
         "হত্যা", "গ্রেপ্তার", "পুলিশ", "আদালত",
     ],
+
+    # ── Environment ───────────────────────────────────────────────────────────
     "environment": [
         # English
-        "climate", "pollution", "air quality", "aqi", "flood", "drought",
-        "cyclone", "earthquake", "wildlife", "forest", "deforestation",
-        "carbon", "renewable", "solar", "wind energy", "green",
-        "environment ministry",
+        "climate change", "pollution", "air quality", "aqi", "flood",
+        "drought", "cyclone", "earthquake", "wildlife", "forest fire",
+        "deforestation", "carbon emission", "renewable energy", "solar power",
+        "wind energy", "green energy", "environment ministry", "net zero",
+        "global warming", "glacier", "biodiversity",
         # Hindi (Devanagari)
         "पर्यावरण", "प्रदूषण", "बाढ़", "सूखा", "भूकंप", "चक्रवात",
-        "जलवायु", "वन", "सौर ऊर्जा",
+        "जलवायु परिवर्तन", "वन", "सौर ऊर्जा",
         # Tamil
         "சுற்றுச்சூழல்", "மாசுபாடு", "வெள்ளம்",
         # Telugu
@@ -305,12 +410,18 @@ CATEGORY_RULES: dict[str, list[str]] = {
         # Bengali
         "পরিবেশ", "দূষণ", "বন্যা",
     ],
+
+    # ── World ─────────────────────────────────────────────────────────────────
+    # Removed "un " (trailing space). "un" with \b matches standalone "UN".
+    # Removed "usa " — "usa" with \b is fine.
     "world": [
         # English
-        "united states", "usa ", "china", "pakistan", "russia", "ukraine",
-        "europe", "nato", "un ", "united nations", "g20", "g7",
-        "foreign ministry", "diplomatic", "sanctions", "border dispute",
-        "international", "global",
+        "united states", "usa", "white house", "china", "pakistan",
+        "russia", "ukraine", "europe", "nato", "united nations",
+        "g20", "g7", "foreign ministry", "diplomatic", "sanctions",
+        "border dispute", "international relations", "global summit",
+        "imf", "world bank", "un security council", "middle east",
+        "israel", "iran", "north korea",
         # Hindi (Devanagari)
         "अमेरिका", "चीन", "पाकिस्तान", "रूस", "अंतरराष्ट्रीय",
         "विदेश मंत्रालय", "कूटनीति", "संयुक्त राष्ट्र",

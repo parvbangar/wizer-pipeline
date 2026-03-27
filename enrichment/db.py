@@ -139,7 +139,7 @@ def fetch_recent_clusters() -> list[dict]:
             .table(TABLE_CLUSTERS)
             .select("id, canonical_article_id, headline, outlet_count, "
                     "article_count, entity_set, top_entities, canonical_simhash, "
-                    "first_seen_at, last_seen_at")
+                    "canonical_embedding, first_seen_at, last_seen_at")
             .gte("last_seen_at", cutoff)
             .order("last_seen_at", desc=True)
             .limit(CLUSTER_MAX_CANDIDATES)

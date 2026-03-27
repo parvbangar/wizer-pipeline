@@ -2,26 +2,28 @@ name: Layer 2 — Metadata Enrichment
 
 # ─────────────────────────────────────────────────────────────────────────────
 # WHEN DOES THIS RUN?
-#   Every 3 hours automatically, offset by 30 minutes from ingestion runs.
-#   Ingestion (breaking_news) fires at :00 — enrichment fires at :30.
-#   This ensures newly ingested articles are ready before enrichment starts.
+#   Every 3 hours, offset 30 min from ingestion so fresh articles are ready.
+#   Schedule: 0:30, 3:30, 6:30 ... UTC  (6:00, 9:00, 12:00 ... IST)
 #
-#   Schedule:  0:30, 3:30, 6:30, 9:30, 12:30, 15:30, 18:30, 21:30 UTC
-#              (6:00, 9:00, 12:00, 15:00, 18:00, 21:00, 0:00, 3:00 IST)
+# MODELS USED (downloaded once, cached between runs):
+#   mDeBERTa-v3-base-mnli-xnli  (~560 MB) — zero-shot category classification
+#   sentence-transformers/LaBSE (~471 MB) — multilingual story clustering
+#   en_core_web_sm + xx_ent_wiki_sm       — NER for entity tagging
 #
-# BATCH SIZE:
-#   Default: 500 per run × 8 runs/day = 4,000 articles/day enriched.
-#   Override via manual trigger (workflow_dispatch) to drain backlog faster.
+# COST: $0 — GitHub Actions is FREE for public repositories.
 #
-# WHY SEPARATE FROM INGESTION?
-#   NLP (spaCy, YAKE, VADER) is CPU-heavy. Running enrichment in the same
-#   job as ingestion would block new articles from arriving. Separate jobs
-#   let both pipelines run concurrently on different runners.
+# RUNNER SPEC: ubuntu-latest = 2 vCPU, 7 GB RAM, 14 GB disk
+#   Estimated time per 500-article batch:
+#     Model loading (first run): ~15 min    (cached after first run: ~2 min)
+#     NER (spaCy):               ~0.5s/article
+#     Classification (mDeBERTa): ~0.2s/article
+#     Embedding (LaBSE):         ~0.1s/article
+#     Total per batch:           ~20-30 min
 # ─────────────────────────────────────────────────────────────────────────────
 on:
   schedule:
-    - cron: "30 */3 * * *"   # every 3 hours, offset 30 min from ingestion
-  workflow_dispatch:          # manual trigger from GitHub UI
+    - cron: "30 */3 * * *"
+  workflow_dispatch:
     inputs:
       batch_size:
         description: "Number of articles to enrich (default: 500)"
@@ -36,12 +38,14 @@ jobs:
   enrich:
     name: Enrich articles
     runs-on: ubuntu-latest
-    timeout-minutes: 90   # 500 articles × ~10s each = ~83 min worst case
+    timeout-minutes: 120   # model loading + 500 articles with NLP
 
     env:
       SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
       ENRICH_BATCH_SIZE:    ${{ github.event.inputs.batch_size || '500' }}
+      # Tell HuggingFace where to cache models (matches our cache step below)
+      HF_HOME:              /home/runner/.cache/huggingface
 
     steps:
       - name: Checkout code
@@ -50,19 +54,49 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"   # matches ingestion workflows
+          python-version: "3.12"
           cache: "pip"
+
+      # ── Cache ML models ──────────────────────────────────────────────────────
+      # mDeBERTa + LaBSE total ~1 GB. Caching saves ~10 min per run.
+      # Key is static — models don't change unless you update DEBERTA_MODEL
+      # or LABSE_MODEL in enrichment/config.py (update key version then).
+      - name: Cache HuggingFace models
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/huggingface
+          key: hf-models-deberta-labse-v1
+          restore-keys: hf-models-deberta-labse-
+
+      # ── Install PyTorch CPU-only BEFORE requirements.txt ─────────────────────
+      # torch CPU wheel = ~200 MB vs ~2 GB for the default CUDA wheel.
+      # Installing it first prevents requirements.txt from triggering a
+      # full CUDA download when sentence-transformers pulls in torch.
+      - name: Install PyTorch (CPU-only)
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # ── Download spaCy models (cached via pip cache) ─────────────────────────
       - name: Download spaCy models
-        # Both models are installed as pip packages and cached between runs.
-        # en_core_web_sm  — English articles
-        # xx_ent_wiki_sm  — Indian regional languages (hi, ta, te, bn, mr, gu, kn, ml, pa, ur)
         run: |
           python -m spacy download en_core_web_sm
           python -m spacy download xx_ent_wiki_sm
+
+      # ── Pre-download HuggingFace models (populates cache on first run) ────────
+      # On cache hit this is instant. On first run it downloads ~1 GB once.
+      - name: Pre-download ML models
+        run: |
+          python -c "
+          from transformers import pipeline
+          from sentence_transformers import SentenceTransformer
+          print('Downloading mDeBERTa...')
+          pipeline('zero-shot-classification', model='MoritzLaurer/mDeBERTa-v3-base-mnli-xnli', device=-1)
+          print('Downloading LaBSE...')
+          SentenceTransformer('sentence-transformers/LaBSE')
+          print('Models ready.')
+          "
 
       - name: Run enrichment pipeline
         run: |
