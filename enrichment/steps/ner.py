@@ -49,31 +49,78 @@ from __future__ import annotations
 
 import logging
 
-from enrichment.config import SPACY_MODEL, NER_MIN_SALIENCE, ENTITY_TYPE_MAP
+from enrichment.config import SPACY_MODEL, SPACY_MULTILINGUAL_MODEL, NER_MIN_SALIENCE, ENTITY_TYPE_MAP
 
 log = logging.getLogger(__name__)
 
-# spaCy model is loaded once per process (expensive operation ~500ms)
-# and reused for all articles in the batch.
-_nlp = None
+# Models are loaded once per process (~500ms each) and reused across the batch.
+# Two models:
+#   _nlp_en  — en_core_web_sm  — English articles (higher accuracy on English)
+#   _nlp_xx  — xx_ent_wiki_sm  — All Indian regional languages (hi, ta, te, bn,
+#                                 mr, gu, kn, ml, pa, ur, etc.)
+#
+# WHY TWO MODELS?
+#   en_core_web_sm is trained on English news — best accuracy for English.
+#   xx_ent_wiki_sm is spaCy's multilingual model trained on Wikipedia across
+#   50+ languages, giving reasonable NER for Hindi, Bengali, and other Indian
+#   languages that appear in Wikipedia.
+#   Running en_core_web_sm on Devanagari/Tamil script still catches English
+#   entities embedded in the text (Modi, BJP, IPL), but xx_ent_wiki_sm
+#   additionally recognises entities written in the native script.
+
+_nlp_en = None   # English model
+_nlp_xx = None   # Multilingual model
 
 
-def _get_nlp():
-    """Load and cache the spaCy model. Raises on first call if not installed."""
-    global _nlp
-    if _nlp is None:
-        try:
-            import spacy
-            _nlp = spacy.load(SPACY_MODEL)
-            log.info("spaCy model '%s' loaded", SPACY_MODEL)
-        except ImportError:
-            raise ImportError("spacy is not installed. Run: pip install spacy")
-        except OSError:
-            raise OSError(
-                f"spaCy model '{SPACY_MODEL}' not found. "
-                f"Run: python -m spacy download {SPACY_MODEL}"
-            )
-    return _nlp
+# Languages that use the English model
+_ENGLISH_LANGS = frozenset({"en", "en-us", "en-gb", "en-in", "en-au"})
+
+
+def _get_nlp(language: str | None):
+    """
+    Return the appropriate spaCy model for the given language code.
+
+    - English (en, en-*) → en_core_web_sm
+    - Everything else    → xx_ent_wiki_sm (multilingual)
+
+    If the multilingual model is not installed, falls back to the English
+    model so NER still runs (it will still catch English-named entities
+    embedded in regional language text).
+    """
+    global _nlp_en, _nlp_xx
+    import spacy
+
+    lang = (language or "").lower()
+    use_english = lang in _ENGLISH_LANGS or lang == ""
+
+    if use_english:
+        if _nlp_en is None:
+            try:
+                _nlp_en = spacy.load(SPACY_MODEL)
+                log.info("spaCy English model '%s' loaded", SPACY_MODEL)
+            except OSError:
+                raise OSError(
+                    f"spaCy model '{SPACY_MODEL}' not found. "
+                    f"Run: python -m spacy download {SPACY_MODEL}"
+                )
+        return _nlp_en
+    else:
+        if _nlp_xx is None:
+            try:
+                _nlp_xx = spacy.load(SPACY_MULTILINGUAL_MODEL)
+                log.info("spaCy multilingual model '%s' loaded", SPACY_MULTILINGUAL_MODEL)
+            except OSError:
+                # Multilingual model not installed — fall back to English model
+                # (still catches English entity names embedded in regional text)
+                log.warning(
+                    "spaCy multilingual model '%s' not found — falling back to '%s'. "
+                    "Run: python -m spacy download %s",
+                    SPACY_MULTILINGUAL_MODEL, SPACY_MODEL, SPACY_MULTILINGUAL_MODEL,
+                )
+                if _nlp_en is None:
+                    _nlp_en = spacy.load(SPACY_MODEL)
+                _nlp_xx = _nlp_en   # share the same model instance
+        return _nlp_xx
 
 
 def _compute_salience(
@@ -105,7 +152,12 @@ def _compute_salience(
     return min(round(score, 2), 1.0)
 
 
-def extract_entities(title: str, full_text: str, description: str) -> list[dict]:
+def extract_entities(
+    title: str,
+    full_text: str,
+    description: str,
+    language_detected: str | None = None,
+) -> list[dict]:
     """
     Extract named entities from article content.
 
@@ -114,9 +166,13 @@ def extract_entities(title: str, full_text: str, description: str) -> list[dict]
     most entity-rich part of a news article (lede and first few paragraphs).
 
     Args:
-      title:       Article headline
-      full_text:   Article body text
-      description: RSS description (fallback if full_text is empty)
+      title:             Article headline
+      full_text:         Article body text
+      description:       RSS description (fallback if full_text is empty)
+      language_detected: ISO language code from the language detection step.
+                         Used to select the right spaCy model:
+                           English (en/en-*) → en_core_web_sm
+                           Indian regional   → xx_ent_wiki_sm (multilingual)
 
     Returns:
       List of entity dicts:
@@ -125,7 +181,7 @@ def extract_entities(title: str, full_text: str, description: str) -> list[dict]
       Returns empty list on error or if no entities found above threshold.
     """
     try:
-        nlp = _get_nlp()
+        nlp = _get_nlp(language_detected)
     except (ImportError, OSError) as e:
         log.warning("NER skipped: %s", e)
         return []

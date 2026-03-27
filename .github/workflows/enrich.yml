@@ -56,9 +56,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Download spaCy model
-        # en_core_web_sm is installed as a pip package — cached between runs
-        run: python -m spacy download en_core_web_sm
+      - name: Download spaCy models
+        # Both models are installed as pip packages and cached between runs.
+        # en_core_web_sm  — English articles
+        # xx_ent_wiki_sm  — Indian regional languages (hi, ta, te, bn, mr, gu, kn, ml, pa, ur)
+        run: |
+          python -m spacy download en_core_web_sm
+          python -m spacy download xx_ent_wiki_sm
 
       - name: Run enrichment pipeline
         run: |

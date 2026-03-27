@@ -42,8 +42,15 @@ TABLE_CLUSTERS  = "article_clusters"
 #   How many articles to fetch and process per run.
 #   500 allows ~4,000 articles/day enriched (8 runs × 500). Lower if on free tier.
 #   NLP is CPU-bound so concurrency doesn't help here — sequential is fine.
+#
+# ENRICH_MIN_WORD_COUNT:
+#   Articles below this word count are marked enriched_at but skipped for all
+#   expensive steps (NER, keywords, clustering, image download).
+#   Typical Indian news snippet / wire brief = 30–60 words.
+#   Articles with < 50 words carry almost no enrichment signal.
 # ─────────────────────────────────────────────────────────────────────────────
-ENRICH_BATCH_SIZE = int(os.getenv("ENRICH_BATCH_SIZE", "500"))
+ENRICH_BATCH_SIZE    = int(os.getenv("ENRICH_BATCH_SIZE",    "500"))
+ENRICH_MIN_WORD_COUNT = int(os.getenv("ENRICH_MIN_WORD_COUNT", "50"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -76,8 +83,18 @@ LANG_DETECT_MIN_CHARS = 20
 #   Keeps the article_entities table lean — filters out
 #   incidental mentions like "he said", "the company", etc.
 # ─────────────────────────────────────────────────────────────────────────────
-SPACY_MODEL       = os.getenv("SPACY_MODEL", "en_core_web_sm")
-NER_MIN_SALIENCE  = 0.1
+SPACY_MODEL              = os.getenv("SPACY_MODEL",             "en_core_web_sm")
+SPACY_MULTILINGUAL_MODEL = os.getenv("SPACY_MULTILINGUAL_MODEL", "xx_ent_wiki_sm")
+NER_MIN_SALIENCE         = 0.1
+#
+# Two models are used based on detected language:
+#   en_core_web_sm  — English articles (highest accuracy on English news)
+#   xx_ent_wiki_sm  — All Indian regional languages: hi, ta, te, bn, mr, gu,
+#                     kn, ml, pa, ur, etc. Trained on Wikipedia across 50+ languages.
+#
+# Download commands:
+#   python -m spacy download en_core_web_sm
+#   python -m spacy download xx_ent_wiki_sm
 
 # Entity types we care about for Indian news
 # spaCy label → stored entity_type
@@ -127,69 +144,182 @@ KEYWORD_DEDUP_THRESHOLD  = 0.9
 # ─────────────────────────────────────────────────────────────────────────────
 CATEGORY_RULES: dict[str, list[str]] = {
     "cricket": [
+        # English
         "ipl", "bcci", "cricket", "test match", "odi", "t20", "virat kohli",
         "rohit sharma", "ms dhoni", "sachin", "batting", "bowling", "wicket",
         "innings", "run chase", "century", "world cup cricket",
+        # Hindi (Devanagari)
+        "क्रिकेट", "आईपीएल", "बीसीसीआई", "विराट", "रोहित", "धोनी", "बल्लेबाज", "गेंदबाज",
+        # Tamil
+        "கிரிக்கெட்", "ஐபிஎல்",
+        # Telugu
+        "క్రికెట్", "ఐపీఎల్",
+        # Bengali
+        "ক্রিকেট", "আইপিএল",
+        # Marathi
+        "क्रिकेट", "आयपीएल",
     ],
     "politics": [
+        # English
         "bjp", "congress", "aap", "modi", "rahul gandhi", "parliament",
         "lok sabha", "rajya sabha", "election", "cm ", "chief minister",
         "minister", "mla", "mp ", "governor", "president of india",
         "political party", "vote", "constituency", "bypoll", "cabinet",
         "nda", "upa", "indi alliance",
+        # Hindi (Devanagari)
+        "भाजपा", "कांग्रेस", "चुनाव", "संसद", "प्रधानमंत्री", "मुख्यमंत्री",
+        "राज्यसभा", "लोकसभा", "सरकार", "राजनीति", "मतदान", "विपक्ष",
+        # Tamil
+        "தேர்தல்", "பாஜக", "நாடாளுமன்றம்", "அரசியல்",
+        # Telugu
+        "ఎన్నికలు", "పార్లమెంటు", "రాజకీయాలు", "బిజెపి",
+        # Bengali
+        "নির্বাচন", "সংসদ", "রাজনীতি", "বিজেপি",
+        # Marathi
+        "निवडणूक", "संसद", "राजकारण",
     ],
     "business": [
+        # English
         "sensex", "nse", "bse", "nifty", "rbi", "rupee", "gdp", "inflation",
         "stock market", "shares", "ipo", "sebi", "mutual fund", "revenue",
         "profit", "quarterly results", "startup", "unicorn", "funding",
         "acquisition", "merger", "budget", "fiscal", "import", "export",
         "gst", "trade", "economic", "economy", "retail", "fdi",
+        # Hindi (Devanagari)
+        "शेयर बाजार", "अर्थव्यवस्था", "बजट", "रुपया", "महंगाई", "व्यापार",
+        "निवेश", "कंपनी", "बाजार", "आर्थिक",
+        # Tamil
+        "பங்கு சந்தை", "பொருளாதாரம்", "வணிகம்",
+        # Telugu
+        "స్టాక్ మార్కెట్", "ఆర్థిక వ్యవస్థ", "వ్యాపారం",
+        # Bengali
+        "শেয়ার বাজার", "অর্থনীতি", "ব্যবসা",
     ],
     "entertainment": [
+        # English
         "bollywood", "box office", "film", "movie", "actor", "actress",
         "director", "ott", "netflix", "amazon prime", "hotstar", "web series",
         "music", "album", "song", "celebrity", "award", "filmfare",
         "srk", "shah rukh", "salman", "deepika", "ranveer", "alia",
+        # Hindi (Devanagari)
+        "बॉलीवुड", "फिल्म", "अभिनेता", "अभिनेत्री", "संगीत", "पुरस्कार",
+        "सिनेमा", "वेब सीरीज", "गाना",
+        # Tamil
+        "சினிமா", "திரைப்படம்", "நடிகர்", "நடிகை", "இசை",
+        # Telugu
+        "సినిమా", "చలనచిత్రం", "నటుడు", "నటి", "సంగీతం",
+        # Bengali
+        "চলচ্চিত্র", "সিনেমা", "অভিনেতা", "সংগীত",
+        # Marathi
+        "चित्रपट", "सिनेमा", "अभिनेता",
     ],
     "technology": [
+        # English
         "artificial intelligence", "ai ", "machine learning", "startup",
         "tech ", "software", "app ", "smartphone", "5g", "cyber", "hack",
         "data breach", "isro", "satellite", "space", "elon musk",
         "google", "meta", "apple", "microsoft", "amazon", "chip",
+        # Hindi (Devanagari)
+        "तकनीक", "कृत्रिम बुद्धिमत्ता", "मोबाइल", "इंटरनेट", "साइबर",
+        "अंतरिक्ष", "उपग्रह",
+        # Tamil
+        "தொழில்நுட்பம்", "செயற்கை நுண்ணறிவு", "அறிவியல்",
+        # Telugu
+        "సాంకేతికత", "కృత్రిమ మేధస్సు", "విజ్ఞానం",
     ],
     "sports": [
+        # English
         "football", "fifa", "isl", "hockey", "badminton", "tennis",
         "olympics", "commonwealth games", "asian games", "wrestling",
         "kabaddi", "pro kabaddi", "formula 1", "f1", "chess", "athlete",
         "gold medal", "silver medal",
+        # Hindi (Devanagari)
+        "खेल", "फुटबॉल", "हॉकी", "बैडमिंटन", "कुश्ती", "कबड्डी",
+        "ओलंपिक", "स्वर्ण पदक", "रजत पदक",
+        # Tamil
+        "விளையாட்டு", "கால்பந்து", "ஹாக்கி",
+        # Telugu
+        "క్రీడలు", "ఫుట్‌బాల్", "హాకీ",
+        # Bengali
+        "খেলাধুলা", "ফুটবল", "হকি",
     ],
     "health": [
+        # English
         "hospital", "doctor", "medicine", "disease", "covid", "vaccine",
         "health ministry", "aiims", "cancer", "diabetes", "surgery",
         "outbreak", "epidemic", "who ", "drug", "clinical trial", "patient",
+        # Hindi (Devanagari)
+        "स्वास्थ्य", "अस्पताल", "डॉक्टर", "बीमारी", "दवा", "कोविड",
+        "टीका", "इलाज", "मरीज",
+        # Tamil
+        "சுகாதாரம்", "மருத்துவமனை", "மருத்துவர்", "நோய்",
+        # Telugu
+        "ఆరోగ్యం", "ఆసుపత్రి", "వైద్యుడు", "వ్యాధి",
+        # Bengali
+        "স্বাস্থ্য", "হাসপাতাল", "ডাক্তার", "রোগ",
     ],
     "education": [
+        # English
         "school", "college", "university", "jee", "neet", "upsc", "ias",
         "board exam", "cbse", "icse", "ugc", "iit", "iim", "scholarship",
         "syllabus", "admission", "student", "education policy", "nep",
+        # Hindi (Devanagari)
+        "शिक्षा", "स्कूल", "कॉलेज", "परीक्षा", "विश्वविद्यालय", "छात्र",
+        "प्रवेश", "छात्रवृत्ति",
+        # Tamil
+        "கல்வி", "பள்ளி", "கல்லூரி", "தேர்வு",
+        # Telugu
+        "విద్య", "పాఠశాల", "కళాశాల", "పరీక్ష",
+        # Bengali
+        "শিক্ষা", "স্কুল", "কলেজ", "পরীক্ষা",
     ],
     "crime": [
+        # English
         "murder", "rape", "assault", "arrested", "police", "fir", "court",
         "judge", "verdict", "convicted", "bail", "chargesheet", "cbi",
         "ed ", "enforcement directorate", "scam", "fraud", "crime",
         "gangster", "kidnap", "robbery",
+        # Hindi (Devanagari)
+        "हत्या", "गिरफ्तार", "पुलिस", "अदालत", "बलात्कार", "धोखाधड़ी",
+        "अपराध", "जमानत", "गैंगस्टर", "अपहरण",
+        # Tamil
+        "கொலை", "கைது", "போலீஸ்", "நீதிமன்றம்",
+        # Telugu
+        "హత్య", "అరెస్టు", "పోలీసు", "న్యాయస్థానం",
+        # Bengali
+        "হত্যা", "গ্রেপ্তার", "পুলিশ", "আদালত",
     ],
     "environment": [
+        # English
         "climate", "pollution", "air quality", "aqi", "flood", "drought",
         "cyclone", "earthquake", "wildlife", "forest", "deforestation",
         "carbon", "renewable", "solar", "wind energy", "green",
         "environment ministry",
+        # Hindi (Devanagari)
+        "पर्यावरण", "प्रदूषण", "बाढ़", "सूखा", "भूकंप", "चक्रवात",
+        "जलवायु", "वन", "सौर ऊर्जा",
+        # Tamil
+        "சுற்றுச்சூழல்", "மாசுபாடு", "வெள்ளம்",
+        # Telugu
+        "పర్యావరణం", "కాలుష్యం", "వరదలు",
+        # Bengali
+        "পরিবেশ", "দূষণ", "বন্যা",
     ],
     "world": [
+        # English
         "united states", "usa ", "china", "pakistan", "russia", "ukraine",
         "europe", "nato", "un ", "united nations", "g20", "g7",
         "foreign ministry", "diplomatic", "sanctions", "border dispute",
         "international", "global",
+        # Hindi (Devanagari)
+        "अमेरिका", "चीन", "पाकिस्तान", "रूस", "अंतरराष्ट्रीय",
+        "विदेश मंत्रालय", "कूटनीति", "संयुक्त राष्ट्र",
+        # Tamil
+        "அமெரிக்கா", "சீனா", "பாகிஸ்தான்", "சர்வதேசம்",
+        # Telugu
+        "అమెరికా", "చైనా", "పాకిస్తాన్", "అంతర్జాతీయం",
+        # Bengali
+        "আমেরিকা", "চীন", "পাকিস্তান", "আন্তর্জাতিক",
     ],
 }
 # Fallback when no category matches

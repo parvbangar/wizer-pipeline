@@ -55,7 +55,10 @@ def fetch_unenriched_batch(limit: int) -> list[dict]:
 
     QUERY LOGIC:
       - enriched_at IS NULL       → not yet processed by Layer 2
-      - has some content          → at least a title or description (skip empty)
+      - is_crawled = true         → full_text has been fetched; uncrawled articles
+                                     have no body text, making NER/keywords/sentiment
+                                     useless. Skip them entirely.
+      - has some content          → at least a title (skip empty shells)
       - ORDER BY published_at DESC → process newest articles first so the app
                                      layer gets enriched data for fresh articles
                                      before stale ones.
@@ -73,6 +76,7 @@ def fetch_unenriched_batch(limit: int) -> list[dict]:
                 "published_at, iab_tier1, iab_tier2"
             )
             .is_("enriched_at", "null")
+            .eq("is_crawled", True)            # only articles with full text fetched
             .not_.is_("title", "null")         # skip articles with no title
             .order("published_at", desc=True)
             .limit(limit)

@@ -53,7 +53,7 @@ import time
 from datetime import datetime, timezone
 
 from enrichment import db
-from enrichment.config import ENRICH_BATCH_SIZE
+from enrichment.config import ENRICH_BATCH_SIZE, ENRICH_MIN_WORD_COUNT
 from enrichment.steps.text_stats  import compute_text_stats
 from enrichment.steps.language    import detect_language
 from enrichment.steps.sentiment   import analyse_sentiment
@@ -105,6 +105,15 @@ def enrich_one(
     except Exception as e:
         log.warning("[%s] text_stats failed: %s", article_id[:8], e)
 
+    # ── Word count gate ───────────────────────────────────────────────────────
+    # Articles below ENRICH_MIN_WORD_COUNT are stubs/briefs with no enrichment
+    # signal. Return early with just text_stats so they don't clog NER/keywords.
+    # enriched_at is still set so they don't re-enter the queue.
+    word_count = update.get("word_count") or 0
+    if word_count < ENRICH_MIN_WORD_COUNT:
+        log.debug("[%s] Skipping enrichment — too short (%d words)", article_id, word_count)
+        return update, [], None, "skip"
+
     # ── Step 2: Language detection ────────────────────────────────────────────
     language_detected = None
     try:
@@ -123,7 +132,7 @@ def enrich_one(
     # ── Step 4: NER ───────────────────────────────────────────────────────────
     entities: list[dict] = []
     try:
-        entities = extract_entities(title, full_text, description)
+        entities = extract_entities(title, full_text, description, language_detected)
     except Exception as e:
         log.warning("[%s] NER failed: %s", article_id[:8], e)
 
