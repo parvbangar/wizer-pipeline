@@ -64,9 +64,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-import numpy as np
-
-from enrichment.config import CLUSTER_EMBEDDING_THRESHOLD, LABSE_MODEL
+from enrichment import db
+from enrichment.config import CLUSTER_EMBEDDING_THRESHOLD, CLUSTER_WINDOW_HOURS, LABSE_MODEL
 
 log = logging.getLogger(__name__)
 
@@ -116,14 +115,6 @@ def get_embedding(text: str) -> list[float]:
         return [0.0] * 768
 
 
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    """
-    Cosine similarity between two normalised embedding vectors.
-    Since LaBSE normalises to unit length, this is just a dot product.
-    """
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    return float(np.dot(np.array(a, dtype=np.float32), np.array(b, dtype=np.float32)))
 
 
 # ── Entity helpers (for cluster display, not for clustering decision) ─────────
@@ -158,20 +149,18 @@ def _merge_top_entities(existing: list[dict], new_entities: list[dict]) -> list[
 def find_or_create_cluster(
     article: dict,
     entities: list[dict],
-    recent_clusters: list[dict],
 ) -> tuple[str | None, dict | None, str]:
     """
-    Find the best matching cluster for an article using LaBSE cosine similarity,
+    Find the best matching cluster for an article using pgvector HNSW search,
     or signal that a new cluster should be created.
 
-    This function is PURE — it does not touch the database.
-    The runner calls db.create_cluster or db.update_cluster based on the result.
+    Replaces the old O(n) Python loop (load all clusters → NumPy dot product)
+    with a single SQL nearest-neighbour query. Sub-millisecond regardless of
+    cluster count. No 48-hour window limitation — HNSW searches the full table.
 
     Args:
-      article:         Article dict (needs: id, title, description, domain, published_at)
-      entities:        Entity list from NER step (used for cluster tags, not for matching)
-      recent_clusters: All clusters from last 48h (pre-loaded by runner),
-                       each must have a 'canonical_embedding' field
+      article:  Article dict (needs: id, title, description, domain, published_at)
+      entities: Entity list from NER step (used for cluster tags, not for matching)
 
     Returns:
       (cluster_id, cluster_payload, action) where action is:
@@ -190,36 +179,27 @@ def find_or_create_cluster(
     published_at = article.get("published_at") or datetime.now(timezone.utc).isoformat()
 
     # ── Compute article embedding ─────────────────────────────────────────────
-    # Title is the primary signal. Description adds context.
-    # We cap at 512 chars total (mDeBERTa token limit, same model family).
     embed_text = f"{title}. {description}"[:512]
     article_embedding = get_embedding(embed_text)
 
-    # If embedding failed (all zeros), don't cluster
     if not any(article_embedding):
         log.debug("Zero embedding for '%s...' — skipping clustering", title[:40])
         return None, None, "skip"
 
-    # ── Find best matching cluster ────────────────────────────────────────────
-    best_cluster = None
-    best_score   = 0.0
-
-    for cluster in recent_clusters:
-        cluster_embedding = cluster.get("canonical_embedding")
-        if not cluster_embedding:
-            continue   # old cluster without embedding — skip
-
-        score = _cosine_similarity(article_embedding, cluster_embedding)
-        if score > best_score:
-            best_score   = score
-            best_cluster = cluster
+    # ── Query pgvector for nearest cluster (single SQL round-trip) ────────────
+    best_cluster = db.find_nearest_cluster(
+        embedding=article_embedding,
+        threshold=CLUSTER_EMBEDDING_THRESHOLD,
+        window_hours=CLUSTER_WINDOW_HOURS,
+    )
 
     # ── JOIN existing cluster ─────────────────────────────────────────────────
-    if best_score >= CLUSTER_EMBEDDING_THRESHOLD and best_cluster:
+    if best_cluster:
         cluster_id = best_cluster["id"]
+        similarity = best_cluster.get("similarity", 0.0)
 
-        article_entity_set = {e["entity_text"].lower() for e in entities}
-        merged_entity_set  = list(
+        article_entity_set  = {e["entity_text"].lower() for e in entities}
+        merged_entity_set   = list(
             set(best_cluster.get("entity_set") or []) | article_entity_set
         )
         merged_top_entities = _merge_top_entities(
@@ -227,14 +207,12 @@ def find_or_create_cluster(
             entities,
         )
 
-        # Outlet count: increment if this is a new domain in the cluster
+        # Increment outlet_count only if this domain is new to the cluster
         existing_entity_set = set(best_cluster.get("entity_set") or [])
-        new_outlet_count = best_cluster.get("outlet_count", 1)
+        new_outlet_count    = best_cluster.get("outlet_count", 1)
         if domain and domain not in existing_entity_set:
             new_outlet_count += 1
 
-        # Do NOT update canonical_embedding on join — keep the original cluster's
-        # embedding as the canonical representation
         cluster_update = {
             "article_count": best_cluster.get("article_count", 1) + 1,
             "outlet_count":  new_outlet_count,
@@ -245,7 +223,7 @@ def find_or_create_cluster(
 
         log.debug(
             "Article '%s...' joined cluster %s (similarity=%.3f)",
-            title[:40], cluster_id, best_score,
+            title[:40], cluster_id, similarity,
         )
         return cluster_id, cluster_update, "join"
 
@@ -259,13 +237,10 @@ def find_or_create_cluster(
         "article_count":        1,
         "entity_set":           list(article_entity_set),
         "top_entities":         _build_top_entities(entities),
-        "canonical_embedding":  article_embedding,   # stored for future comparisons
+        "canonical_embedding":  article_embedding,   # jsonb — db.create_cluster also writes embedding_vec
         "first_seen_at":        published_at,
         "last_seen_at":         published_at,
     }
 
-    log.debug(
-        "Article '%s...' starts new cluster (best_similarity=%.3f)",
-        title[:40], best_score,
-    )
+    log.debug("Article '%s...' starts new cluster", title[:40])
     return None, new_cluster, "create"

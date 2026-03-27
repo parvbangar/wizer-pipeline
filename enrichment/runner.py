@@ -40,10 +40,8 @@ STEP EXECUTION ORDER:
   8. clustering   — depends on ner (needs entities) + title_simhash from article
 
 CLUSTERING NOTE:
-  Recent clusters are loaded ONCE per batch (not once per article) to
-  minimise DB calls. After each article is assigned to a cluster, the
-  in-memory cluster list is updated so subsequent articles in the same
-  batch can join it.
+  Uses pgvector HNSW — one SQL nearest-neighbour query per article.
+  No in-memory cluster list. Sub-millisecond regardless of cluster count.
 """
 
 from __future__ import annotations
@@ -72,14 +70,12 @@ log = logging.getLogger(__name__)
 
 def enrich_one(
     article: dict,
-    recent_clusters: list[dict],
 ) -> tuple[dict, list[dict], dict | None, str]:
     """
     Run all enrichment steps on a single article.
 
     Args:
-      article:         Article dict from the DB
-      recent_clusters: Pre-loaded recent clusters (mutated in-place on cluster create)
+      article: Article dict from the DB
 
     Returns:
       (article_update, entities, cluster_payload, cluster_action)
@@ -158,19 +154,14 @@ def enrich_one(
         log.warning("[%s] image hashing failed: %s", article_id[:8], e)
 
     # ── Step 8: Story clustering ──────────────────────────────────────────────
-    # Get title_simhash — it was computed by Layer 1 and stored in articles,
-    # but is not in our select query. We pass None; clustering will still work
-    # via entity matching (title_simhash is a secondary signal).
-    # TODO: add title_simhash to the select query in db.fetch_unenriched_batch
-    #       once you confirm it's indexed and available.
-    cluster_id     = None
+    # Uses pgvector HNSW: one SQL query per article, no in-memory cluster list.
+    cluster_id      = None
     cluster_payload = None
     cluster_action  = "skip"
     try:
         cluster_id, cluster_payload, cluster_action = find_or_create_cluster(
-            article         = article,
-            entities        = entities,    # used for entity_set/top_entities display
-            recent_clusters = recent_clusters,
+            article  = article,
+            entities = entities,
         )
         if cluster_id:
             update["cluster_id"] = cluster_id
@@ -226,11 +217,6 @@ def run_enrichment(
 
     log.info("Fetched %d articles to enrich", len(articles))
 
-    # ── Load recent clusters ONCE for the whole batch ─────────────────────────
-    # This avoids one DB round-trip per article for cluster lookup.
-    recent_clusters: list[dict] = db.fetch_recent_clusters()
-    log.debug("Loaded %d recent clusters for matching", len(recent_clusters))
-
     # ── Process each article ──────────────────────────────────────────────────
     for i, article in enumerate(articles, 1):
         article_id = article.get("id", "")
@@ -239,11 +225,9 @@ def run_enrichment(
         log.debug("[%d/%d] Enriching: %s…", i, len(articles), title)
 
         try:
-            article_update, entities, cluster_payload, cluster_action = enrich_one(
-                article, recent_clusters
-            )
+            article_update, entities, cluster_payload, cluster_action = enrich_one(article)
         except Exception as e:
-            log.error("[%s] enrich_one crashed: %s", article_id[:8], e)
+            log.error("[%s] enrich_one crashed: %s", article_id, e)
             summary["failed"] += 1
             # Mark as enriched anyway so it doesn't block the queue forever
             if not dry_run:
@@ -268,20 +252,12 @@ def run_enrichment(
             new_cluster_id = db.create_cluster(cluster_payload)
             if new_cluster_id:
                 article_update["cluster_id"] = new_cluster_id
-                # Add to in-memory list so later articles in this batch can join it
-                cluster_payload["id"] = new_cluster_id
-                recent_clusters.append(cluster_payload)
                 summary["new_clusters"] += 1
 
         elif cluster_action == "join" and cluster_payload:
             cluster_id = article_update.get("cluster_id")
             if cluster_id:
                 db.update_cluster(cluster_id, cluster_payload)
-                # Update in-memory cluster so later articles see the updated entity set
-                for c in recent_clusters:
-                    if c["id"] == cluster_id:
-                        c.update(cluster_payload)
-                        break
                 summary["clustered"] += 1
 
         else:

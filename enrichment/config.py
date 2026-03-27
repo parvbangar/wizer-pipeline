@@ -466,18 +466,12 @@ IMAGE_HASH_SIZE        = 8                  # produces 64-bit pHash
 #   Raise to 0.5 if you're getting too many false clusters.
 #
 # CLUSTER_WINDOW_HOURS:
-#   Only cluster against articles published in the last N hours.
-#   48h covers breaking news lifecycles (most Indian stories resolve in 24-36h).
-#
-# CLUSTER_MAX_CANDIDATES:
-#   Max number of recent clusters to compare against per article.
-#   Prevents slow O(n²) comparisons when there are thousands of active clusters.
+#   Search window for the pgvector HNSW nearest-neighbour query.
+#   Pass 0 to search ALL clusters (no window) — safe with pgvector since
+#   the HNSW index keeps queries fast regardless of cluster count.
+#   48h is a sensible default that covers most Indian news lifecycles.
 # ─────────────────────────────────────────────────────────────────────────────
 CLUSTER_WINDOW_HOURS        = int(os.getenv("CLUSTER_WINDOW_HOURS", "48"))
-CLUSTER_MIN_SHARED_ENTITIES = 2
-CLUSTER_SIMHASH_THRESHOLD   = 5     # bit distance ≤ 5 = titles are very similar
-CLUSTER_SCORE_THRESHOLD     = 0.35
-CLUSTER_MAX_CANDIDATES      = 500   # max clusters to compare per article
 
 
 # ─────────────────────────────────────────────────────────────────────────────

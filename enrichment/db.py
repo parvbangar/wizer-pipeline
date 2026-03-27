@@ -17,15 +17,14 @@ CONNECTION:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone, timedelta
-from typing import Any
+from datetime import datetime, timezone
 
 from supabase import create_client, Client
 
 from enrichment.config import (
     SUPABASE_URL, SUPABASE_KEY,
     TABLE_ARTICLES, TABLE_ENTITIES, TABLE_CLUSTERS,
-    CLUSTER_WINDOW_HOURS, CLUSTER_MAX_CANDIDATES,
+    CLUSTER_WINDOW_HOURS, CLUSTER_EMBEDDING_THRESHOLD,
 )
 
 log = logging.getLogger(__name__)
@@ -141,41 +140,47 @@ def fetch_unenriched_batch_forced(limit: int, offset: int = 0) -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# READING: FETCH RECENT CLUSTERS (for clustering step)
+# READING: NEAREST CLUSTER SEARCH (pgvector HNSW)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def fetch_recent_clusters() -> list[dict]:
+def find_nearest_cluster(
+    embedding: list[float],
+    threshold: float | None = None,
+    window_hours: int | None = None,
+) -> dict | None:
     """
-    Load all clusters updated in the last CLUSTER_WINDOW_HOURS hours.
+    Find the closest cluster to an article embedding using pgvector HNSW.
 
-    WHY LOAD INTO MEMORY?
-      The clustering step compares each article against all recent clusters.
-      Loading them once per batch (not once per article) keeps DB calls minimal.
-      At 48h window with ~10K articles/day → ~10K clusters max in memory.
-      Each cluster dict is ~500 bytes → ~5 MB total. Totally fine.
+    Calls the find_nearest_cluster() SQL function (docs/pgvector_migration.sql).
+    One DB round-trip per article, sub-millisecond query regardless of cluster count.
 
-    Returns list of cluster dicts (empty list on error).
+    Args:
+      embedding:    768-dim LaBSE embedding for the article (normalised floats)
+      threshold:    Min cosine similarity to qualify (default: CLUSTER_EMBEDDING_THRESHOLD)
+      window_hours: Only search clusters seen in last N hours (default: CLUSTER_WINDOW_HOURS)
+                    Pass 0 to search all clusters with no time limit.
+
+    Returns the best-matching cluster dict (with 'similarity' key), or None.
     """
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(hours=CLUSTER_WINDOW_HOURS)
-    ).isoformat()
+    if threshold is None:
+        threshold = CLUSTER_EMBEDDING_THRESHOLD
+    if window_hours is None:
+        window_hours = CLUSTER_WINDOW_HOURS
+
+    # Format as pgvector literal: '[x,y,z,...]'
+    vec_str = "[" + ",".join(f"{v:.6f}" for v in embedding) + "]"
 
     try:
-        resp = (
-            get_client()
-            .table(TABLE_CLUSTERS)
-            .select("id, canonical_article_id, headline, outlet_count, "
-                    "article_count, entity_set, top_entities, canonical_simhash, "
-                    "canonical_embedding, first_seen_at, last_seen_at")
-            .gte("last_seen_at", cutoff)
-            .order("last_seen_at", desc=True)
-            .limit(CLUSTER_MAX_CANDIDATES)
-            .execute()
-        )
-        return resp.data or []
+        resp = get_client().rpc("find_nearest_cluster", {
+            "query_embedding":      vec_str,
+            "similarity_threshold": threshold,
+            "window_hours":         window_hours,
+        }).execute()
+        rows = resp.data or []
+        return rows[0] if rows else None
     except Exception as e:
-        log.warning("fetch_recent_clusters failed: %s — clustering will create new clusters", e)
-        return []
+        log.warning("find_nearest_cluster RPC failed: %s — article will start new cluster", e)
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -254,11 +259,19 @@ def create_cluster(cluster_data: dict) -> str | None:
     """
     Insert a new cluster row and return its uuid.
 
-    Called when no matching cluster is found for a new article.
-    The article becomes the canonical (first) article in the cluster.
+    Writes both canonical_embedding (jsonb, for backward compat) and
+    embedding_vec (vector, for pgvector HNSW search). If cluster_data
+    contains a 'canonical_embedding' list, embedding_vec is derived from it.
 
     Returns the new cluster uuid, or None on failure.
     """
+    # Populate embedding_vec from canonical_embedding if present
+    raw_embedding = cluster_data.get("canonical_embedding")
+    if raw_embedding and isinstance(raw_embedding, list):
+        cluster_data["embedding_vec"] = (
+            "[" + ",".join(f"{v:.6f}" for v in raw_embedding) + "]"
+        )
+
     try:
         resp = get_client().table(TABLE_CLUSTERS).insert(cluster_data).execute()
         rows = resp.data or []
