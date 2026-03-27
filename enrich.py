@@ -46,6 +46,7 @@ EXIT CODES:
 
 import argparse
 import logging
+import os
 import sys
 
 from enrichment.runner import run_enrichment
@@ -95,6 +96,12 @@ Examples:
              "Useful when upgrading models or fixing bugs.",
     )
     parser.add_argument(
+        "--offset",
+        type=int,
+        default=None,
+        help="Skip first N articles (for parallel shards). Default: ENRICH_OFFSET env var or 0.",
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable DEBUG logging (very detailed output per article).",
@@ -109,15 +116,17 @@ Examples:
     if args.force:
         log.info("FORCE MODE — re-processing already-enriched articles")
 
-    # Resolve batch size: CLI arg > env var > default (handled in runner)
+    # Resolve batch size and offset: CLI arg > env var > default
     from enrichment.config import ENRICH_BATCH_SIZE
     batch_size = args.batch_size or ENRICH_BATCH_SIZE
+    offset = args.offset if args.offset is not None else int(os.getenv("ENRICH_OFFSET", "0"))
 
     try:
         summary = run_enrichment(
             batch_size=batch_size,
             dry_run=args.dry_run,
             force=args.force,
+            offset=offset,
         )
     except KeyboardInterrupt:
         log.info("Stopped by user (Ctrl+C)")

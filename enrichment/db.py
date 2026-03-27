@@ -49,7 +49,7 @@ def get_client() -> Client:
 # READING: FETCH ARTICLES TO ENRICH
 # ─────────────────────────────────────────────────────────────────────────────
 
-def fetch_unenriched_batch(limit: int) -> list[dict]:
+def fetch_unenriched_batch(limit: int, offset: int = 0) -> list[dict]:
     """
     Fetch a batch of articles that haven't been enriched yet.
 
@@ -79,7 +79,7 @@ def fetch_unenriched_batch(limit: int) -> list[dict]:
             .eq("is_crawled", True)            # only articles with full text fetched
             .not_.is_("title", "null")         # skip articles with no title
             .order("published_at", desc=True)
-            .limit(limit)
+            .range(offset, offset + limit - 1)
             .execute()
         )
         return resp.data or []
@@ -88,7 +88,7 @@ def fetch_unenriched_batch(limit: int) -> list[dict]:
         return []
 
 
-def fetch_unenriched_batch_forced(limit: int) -> list[dict]:
+def fetch_unenriched_batch_forced(limit: int, offset: int = 0) -> list[dict]:
     """
     Same as fetch_unenriched_batch but fetches ALL articles (including already
     enriched ones). Used when --force flag is passed to re-enrich everything.
@@ -104,7 +104,7 @@ def fetch_unenriched_batch_forced(limit: int) -> list[dict]:
             )
             .not_.is_("title", "null")
             .order("published_at", desc=True)
-            .limit(limit)
+            .range(offset, offset + limit - 1)
             .execute()
         )
         return resp.data or []

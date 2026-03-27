@@ -188,6 +188,7 @@ def run_enrichment(
     batch_size: int = ENRICH_BATCH_SIZE,
     dry_run: bool   = False,
     force: bool     = False,
+    offset: int     = 0,
 ) -> dict:
     """
     Main entry point. Fetches a batch of unenriched articles and processes them.
@@ -200,8 +201,8 @@ def run_enrichment(
     Returns:
       Summary dict with counts of processed/failed/clustered articles.
     """
-    log.info("═══ Enrichment run start | batch=%d | dry_run=%s | force=%s ═══",
-             batch_size, dry_run, force)
+    log.info("═══ Enrichment run start | batch=%d | offset=%d | dry_run=%s | force=%s ═══",
+             batch_size, offset, dry_run, force)
     t_start = time.perf_counter()
 
     summary = {
@@ -215,9 +216,9 @@ def run_enrichment(
 
     # ── Fetch articles ────────────────────────────────────────────────────────
     if force:
-        articles = db.fetch_unenriched_batch_forced(batch_size)
+        articles = db.fetch_unenriched_batch_forced(batch_size, offset=offset)
     else:
-        articles = db.fetch_unenriched_batch(batch_size)
+        articles = db.fetch_unenriched_batch(batch_size, offset=offset)
 
     if not articles:
         log.info("No unenriched articles found — nothing to do")

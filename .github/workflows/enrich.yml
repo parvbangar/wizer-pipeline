@@ -2,8 +2,17 @@ name: Layer 2 — Metadata Enrichment
 
 # ─────────────────────────────────────────────────────────────────────────────
 # WHEN DOES THIS RUN?
-#   Every 3 hours, offset 30 min from ingestion so fresh articles are ready.
-#   Schedule: 0:30, 3:30, 6:30 ... UTC  (6:00, 9:00, 12:00 ... IST)
+#   Every hour at :30 past the hour (offset from ingestion at :00).
+#   Schedule: 0:30, 1:30, 2:30 ... UTC  (6:00, 7:00, 8:00 ... IST)
+#
+# PARALLEL SHARDS:
+#   Two jobs run simultaneously per trigger — shard 0 and shard 1.
+#   Shard 0 enriches the newest 2,000 articles (offset 0).
+#   Shard 1 enriches the next   2,000 articles (offset 2,000).
+#   Zero overlap, 4,000 articles enriched per hour trigger.
+#
+# DAILY THROUGHPUT:
+#   24 runs × 4,000 articles = ~96,000 articles/day
 #
 # MODELS USED (downloaded once, cached between runs):
 #   mDeBERTa-v3-base-mnli-xnli  (~560 MB) — zero-shot category classification
@@ -13,22 +22,22 @@ name: Layer 2 — Metadata Enrichment
 # COST: $0 — GitHub Actions is FREE for public repositories.
 #
 # RUNNER SPEC: ubuntu-latest = 2 vCPU, 7 GB RAM, 14 GB disk
-#   Estimated time per 500-article batch:
-#     Model loading (first run): ~15 min    (cached after first run: ~2 min)
+#   Estimated time per 2,000-article batch:
+#     Model loading (cached):    ~2 min
 #     NER (spaCy):               ~0.5s/article
 #     Classification (mDeBERTa): ~0.2s/article
 #     Embedding (LaBSE):         ~0.1s/article
-#     Total per batch:           ~20-30 min
+#     Total per shard:           ~30-50 min
 # ─────────────────────────────────────────────────────────────────────────────
 on:
   schedule:
-    - cron: "30 */3 * * *"
+    - cron: "30 * * * *"    # every hour at :30
   workflow_dispatch:
     inputs:
       batch_size:
-        description: "Number of articles to enrich (default: 500)"
+        description: "Articles per shard (default: 2000)"
         required: false
-        default: "500"
+        default: "2000"
       force:
         description: "Re-enrich already-enriched articles? (true/false)"
         required: false
@@ -36,14 +45,22 @@ on:
 
 jobs:
   enrich:
-    name: Enrich articles
+    name: "Enrich shard ${{ matrix.shard }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 120   # model loading + 500 articles with NLP
+    timeout-minutes: 120   # model loading + 2,000 articles with NLP
+
+    strategy:
+      fail-fast: false      # if one shard fails, let the other keep running
+      matrix:
+        shard: [0, 1]       # 2 parallel shards per trigger
 
     env:
       SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-      ENRICH_BATCH_SIZE:    ${{ github.event.inputs.batch_size || '500' }}
+      ENRICH_BATCH_SIZE:    ${{ github.event.inputs.batch_size || '2000' }}
+      # Shard 0 → offset 0, Shard 1 → offset 2000
+      # Formula: shard × batch_size
+      ENRICH_OFFSET:        ${{ matrix.shard * 2000 }}
       # Tell HuggingFace where to cache models (matches our cache step below)
       HF_HOME:              /home/runner/.cache/huggingface
 
@@ -59,8 +76,6 @@ jobs:
 
       # ── Cache ML models ──────────────────────────────────────────────────────
       # mDeBERTa + LaBSE total ~1 GB. Caching saves ~10 min per run.
-      # Key is static — models don't change unless you update DEBERTA_MODEL
-      # or LABSE_MODEL in enrichment/config.py (update key version then).
       - name: Cache HuggingFace models
         uses: actions/cache@v4
         with:
@@ -70,8 +85,6 @@ jobs:
 
       # ── Install PyTorch CPU-only BEFORE requirements.txt ─────────────────────
       # torch CPU wheel = ~200 MB vs ~2 GB for the default CUDA wheel.
-      # Installing it first prevents requirements.txt from triggering a
-      # full CUDA download when sentence-transformers pulls in torch.
       - name: Install PyTorch (CPU-only)
         run: pip install torch --index-url https://download.pytorch.org/whl/cpu
 
@@ -104,4 +117,4 @@ jobs:
           if [ "${{ github.event.inputs.force }}" = "true" ]; then
             FORCE_FLAG="--force"
           fi
-          python enrich.py --batch-size $ENRICH_BATCH_SIZE $FORCE_FLAG
+          python enrich.py --batch-size $ENRICH_BATCH_SIZE --offset $ENRICH_OFFSET $FORCE_FLAG
