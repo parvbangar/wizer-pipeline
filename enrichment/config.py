@@ -474,6 +474,8 @@ IMAGE_HASH_SIZE        = 8                  # produces 64-bit pHash
 #   48h is a sensible default that covers most Indian news lifecycles.
 # ─────────────────────────────────────────────────────────────────────────────
 CLUSTER_WINDOW_HOURS        = int(os.getenv("CLUSTER_WINDOW_HOURS", "48"))
+# Singleton clusters older than this are deleted by cleanup_clusters.py
+CLUSTER_SINGLETON_TTL_HOURS = int(os.getenv("CLUSTER_SINGLETON_TTL_HOURS", "72"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

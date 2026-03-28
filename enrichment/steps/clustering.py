@@ -22,19 +22,6 @@ MODEL: sentence-transformers/LaBSE (Google, 2022)
     - Produces 768-dim normalised vectors
     - Two articles covering the same event in DIFFERENT languages will have
       cosine similarity > 0.82, even with zero word overlap
-    - This is the critical advantage over entity Jaccard + SimHash:
-      entity extraction fails on non-English text, embeddings don't
-
-WHY COSINE SIMILARITY OVER ENTITY JACCARD:
-  Old approach: intersection of NER entities / union of NER entities
-    Problem: spaCy NER is unreliable on Hindi/Tamil/Telugu script
-    A Hindi article about "Modi budget" extracts 0 entities → Jaccard = 0
-    → Every Hindi article starts a new cluster (completely broken)
-
-  New approach: LaBSE cosine similarity on title + description
-    "Modi announces new budget" (English) and
-    "मोदी ने नया बजट पेश किया" (Hindi) →
-    cosine similarity > 0.88 → correctly clustered ✓
 
 THRESHOLD (CLUSTER_EMBEDDING_THRESHOLD = 0.82):
   Calibrated for Indian wire news syndication:
@@ -42,18 +29,35 @@ THRESHOLD (CLUSTER_EMBEDDING_THRESHOLD = 0.82):
   - Same event, independently reported: ~0.83-0.92
   - Related but different stories: ~0.70-0.82
   - Unrelated stories: < 0.65
-  Raise to 0.88 for stricter clustering, lower to 0.75 for looser.
+
+CANONICAL EMBEDDING — RUNNING MEAN:
+  The cluster's canonical_embedding is updated on every JOIN using a
+  running mean (1/N weighting). This keeps the cluster centroid accurate
+  as stories evolve: "Budget announcement" → "Budget reactions" → "Budget
+  implementation". The HNSW search always uses the centroid of all articles
+  seen so far, not just the first article.
+
+  Mathematically:
+    new_centroid = ((N-1)/N) × old_centroid + (1/N) × new_article
+  Re-normalised to unit vector after each update (required for cosine sim).
+
+OUTLET COUNT — DOMAIN DEDUP via outlet_set:
+  outlet_count = number of DISTINCT domains in the cluster.
+  outlet_set   = jsonb array of domain strings, used for dedup.
+  Previously the check was against entity_set (entity texts like "Modi",
+  "BJP") — domains were never in entity_set so outlet_count was wrong.
 
 ENTITY SET (kept from NER step):
-  Even though clustering no longer DEPENDS on entities, we still populate
-  entity_set and top_entities in clusters for the app layer:
+  Populates entity_set and top_entities in clusters for the app layer:
   - Article tagging ("Modi", "BJP", "Budget")
   - Entity-based search ("all articles about Virat Kohli")
   - Propensity scoring features
 
-EMBEDDING STORAGE:
-  canonical_embedding (jsonb array of 768 floats) stored on article_clusters.
-  Loaded once per batch for in-memory cosine similarity comparison.
+HEADLINE REFRESH:
+  Cluster headline is updated when a new article has a longer title.
+  News story headlines get more descriptive as coverage deepens —
+  the wire flash "Budget announced" evolves into "Modi Budget 2024:
+  ₹1.8 lakh crore infrastructure push, tax slabs unchanged".
 
 INSTALL:
   pip install sentence-transformers torch
@@ -62,6 +66,7 @@ INSTALL:
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timezone
 
 from enrichment import db
@@ -107,7 +112,6 @@ def get_embedding(text: str) -> list[float]:
 
     try:
         model = _get_model()
-        # normalize_embeddings=True → unit vectors → dot product = cosine similarity
         embedding = model.encode(text[:512], normalize_embeddings=True)
         return embedding.tolist()
     except Exception as e:
@@ -115,9 +119,40 @@ def get_embedding(text: str) -> list[float]:
         return [0.0] * 768
 
 
+# ── Embedding math ─────────────────────────────────────────────────────────────
+
+def _running_mean_embedding(
+    old: list[float],
+    new: list[float],
+    new_count: int,
+) -> list[float]:
+    """
+    Update cluster centroid using a running mean, then re-normalise.
+
+    Formula: new_centroid = ((N-1)/N) × old + (1/N) × new
+    Where N = new_count (the article count AFTER this article joins).
+
+    This is mathematically equivalent to the mean of all article embeddings
+    seen so far. The cluster centroid stays accurate as stories evolve.
+    Re-normalising to unit vector keeps cosine similarity valid.
+    """
+    if not old or len(old) != len(new):
+        return new
+
+    alpha   = 1.0 / max(new_count, 1)
+    blended = [(alpha * n + (1.0 - alpha) * o) for n, o in zip(new, old)]
+
+    # Re-normalise to unit vector (required for pgvector cosine similarity)
+    norm = math.sqrt(sum(v * v for v in blended))
+    return [v / norm for v in blended] if norm > 0 else old
 
 
-# ── Entity helpers (for cluster display, not for clustering decision) ─────────
+def _format_vec(embedding: list[float]) -> str:
+    """Format a float list as pgvector literal: '[x,y,z,...]'"""
+    return "[" + ",".join(f"{v:.6f}" for v in embedding) + "]"
+
+
+# ── Entity helpers ─────────────────────────────────────────────────────────────
 
 def _build_top_entities(entities: list[dict]) -> list[dict]:
     """Convert NER entity list to top_entities format for cluster storage."""
@@ -154,10 +189,6 @@ def find_or_create_cluster(
     Find the best matching cluster for an article using pgvector HNSW search,
     or signal that a new cluster should be created.
 
-    Replaces the old O(n) Python loop (load all clusters → NumPy dot product)
-    with a single SQL nearest-neighbour query. Sub-millisecond regardless of
-    cluster count. No 48-hour window limitation — HNSW searches the full table.
-
     Args:
       article:  Article dict (needs: id, title, description, domain, published_at)
       entities: Entity list from NER step (used for cluster tags, not for matching)
@@ -165,13 +196,11 @@ def find_or_create_cluster(
     Returns:
       (cluster_id, cluster_payload, action) where action is:
         'join'   — article joins an existing cluster
-                   cluster_id = uuid of the existing cluster
                    cluster_payload = update dict for db.update_cluster
         'create' — no similar cluster found, create a new one
                    cluster_id = None (assigned after DB insert)
                    cluster_payload = new cluster dict for db.create_cluster
         'skip'   — embedding failed (zero vector) → don't cluster
-                   cluster_id = None, cluster_payload = None
     """
     title        = article.get("title") or ""
     description  = article.get("description") or ""
@@ -179,7 +208,7 @@ def find_or_create_cluster(
     published_at = article.get("published_at") or datetime.now(timezone.utc).isoformat()
 
     # ── Compute article embedding ─────────────────────────────────────────────
-    embed_text = f"{title}. {description}"[:512]
+    embed_text        = f"{title}. {description}"[:512]
     article_embedding = get_embedding(embed_text)
 
     if not any(article_embedding):
@@ -188,16 +217,18 @@ def find_or_create_cluster(
 
     # ── Query pgvector for nearest cluster (single SQL round-trip) ────────────
     best_cluster = db.find_nearest_cluster(
-        embedding=article_embedding,
-        threshold=CLUSTER_EMBEDDING_THRESHOLD,
-        window_hours=CLUSTER_WINDOW_HOURS,
+        embedding    = article_embedding,
+        threshold    = CLUSTER_EMBEDDING_THRESHOLD,
+        window_hours = CLUSTER_WINDOW_HOURS,
     )
 
     # ── JOIN existing cluster ─────────────────────────────────────────────────
     if best_cluster:
-        cluster_id = best_cluster["id"]
-        similarity = best_cluster.get("similarity", 0.0)
+        cluster_id   = best_cluster["id"]
+        similarity   = best_cluster.get("similarity", 0.0)
+        new_count    = best_cluster.get("article_count", 1) + 1
 
+        # Entity merging
         article_entity_set  = {e["entity_text"].lower() for e in entities}
         merged_entity_set   = list(
             set(best_cluster.get("entity_set") or []) | article_entity_set
@@ -207,23 +238,45 @@ def find_or_create_cluster(
             entities,
         )
 
-        # Increment outlet_count only if this domain is new to the cluster
-        existing_entity_set = set(best_cluster.get("entity_set") or [])
+        # ── Outlet dedup via outlet_set (fixes outlet_count inflation) ────────
+        # Previously: checked `domain not in entity_set` — always True since
+        # entity_set contains entity TEXTS ("Modi", "BJP"), not domains.
+        # Now: maintained outlet_set tracks actual contributing domains.
+        existing_outlet_set = set(best_cluster.get("outlet_set") or [])
         new_outlet_count    = best_cluster.get("outlet_count", 1)
-        if domain and domain not in existing_entity_set:
+        new_outlet_set      = list(existing_outlet_set)
+        if domain and domain not in existing_outlet_set:
             new_outlet_count += 1
+            new_outlet_set.append(domain)
 
-        cluster_update = {
-            "article_count": best_cluster.get("article_count", 1) + 1,
-            "outlet_count":  new_outlet_count,
-            "entity_set":    merged_entity_set,
-            "top_entities":  merged_top_entities,
-            "last_seen_at":  published_at,
+        # ── Running mean embedding update ─────────────────────────────────────
+        # Keeps cluster centroid accurate as story evolves.
+        # Re-normalised to unit vector after blending.
+        old_embedding   = best_cluster.get("canonical_embedding") or []
+        new_embedding   = _running_mean_embedding(old_embedding, article_embedding, new_count)
+
+        # ── Headline refresh: prefer longer (more descriptive) titles ─────────
+        # Wire flash: "Budget announced" → Full story: "Modi Budget 2024:
+        # ₹1.8 lakh crore infrastructure push, income tax slabs unchanged"
+        current_headline = best_cluster.get("headline") or ""
+        new_headline     = title[:500] if title and len(title) > len(current_headline) else None
+
+        cluster_update: dict = {
+            "article_count":       new_count,
+            "outlet_count":        new_outlet_count,
+            "outlet_set":          new_outlet_set,
+            "entity_set":          merged_entity_set,
+            "top_entities":        merged_top_entities,
+            "last_seen_at":        published_at,
+            "canonical_embedding": new_embedding,   # db.update_cluster writes embedding_vec too
         }
+        if new_headline:
+            cluster_update["headline"] = new_headline
 
         log.debug(
-            "Article '%s...' joined cluster %s (similarity=%.3f)",
+            "Article '%s...' joined cluster %s (sim=%.3f, outlets=%d→%d)",
             title[:40], cluster_id, similarity,
+            best_cluster.get("outlet_count", 1), new_outlet_count,
         )
         return cluster_id, cluster_update, "join"
 
@@ -236,8 +289,9 @@ def find_or_create_cluster(
         "outlet_count":         1,
         "article_count":        1,
         "entity_set":           list(article_entity_set),
+        "outlet_set":           [domain] if domain else [],
         "top_entities":         _build_top_entities(entities),
-        "canonical_embedding":  article_embedding,   # jsonb — db.create_cluster also writes embedding_vec
+        "canonical_embedding":  article_embedding,   # db.create_cluster also writes embedding_vec
         "first_seen_at":        published_at,
         "last_seen_at":         published_at,
     }

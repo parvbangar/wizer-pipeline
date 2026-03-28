@@ -350,12 +350,21 @@ def create_cluster(cluster_data: dict) -> str | None:
 def update_cluster(cluster_id: str, update: dict) -> bool:
     """
     Update an existing cluster with new stats (outlet_count, article_count,
-    entity_set, top_entities, last_seen_at, etc.).
+    entity_set, outlet_set, top_entities, canonical_embedding, etc.).
+
+    When canonical_embedding is included (running mean update), also formats
+    embedding_vec as a pgvector literal so the HNSW index stays current.
 
     Called when an article joins an existing cluster.
     Returns True on success, False on failure.
     """
     update["updated_at"] = datetime.now(timezone.utc).isoformat()
+    # Keep embedding_vec in sync with canonical_embedding
+    raw_embedding = update.get("canonical_embedding")
+    if raw_embedding and isinstance(raw_embedding, list):
+        update["embedding_vec"] = (
+            "[" + ",".join(f"{v:.6f}" for v in raw_embedding) + "]"
+        )
     try:
         _run_with_retry(
             lambda: get_client().table(TABLE_CLUSTERS).update(update).eq("id", cluster_id).execute()
