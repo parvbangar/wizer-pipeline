@@ -125,14 +125,11 @@ CLUSTER_EMBEDDING_THRESHOLD = float(os.getenv("CLUSTER_EMBEDDING_THRESHOLD", "0.
 # ─────────────────────────────────────────────────────────────────────────────
 SPACY_MODEL              = os.getenv("SPACY_MODEL",             "en_core_web_sm")
 SPACY_MULTILINGUAL_MODEL = os.getenv("SPACY_MULTILINGUAL_MODEL", "xx_ent_wiki_sm")
-INDIC_NER_MODEL          = os.getenv("INDIC_NER_MODEL",          "ai4bharat/IndicNER")
 NER_MIN_SALIENCE         = 0.1
 #
-# Three models are used based on detected language:
-#   en_core_web_sm  — English articles (highest accuracy on English news)
-#   ai4bharat/IndicNER — Indian regional languages: hi, bn, gu, kn, ml, mr,
-#                        or, pa, ta, te, as, ur — trained on Naamapadam dataset
-#   xx_ent_wiki_sm  — Fallback multilingual spaCy (if IndicNER unavailable)
+# Two models based on detected language:
+#   en_core_web_sm  — English articles
+#   xx_ent_wiki_sm  — All other languages (Hindi, Tamil, etc.)
 #
 # Download commands:
 #   python -m spacy download en_core_web_sm

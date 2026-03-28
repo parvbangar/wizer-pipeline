@@ -39,6 +39,7 @@ from pipeline.config import (
     ART_COL_URL_HASH, ART_COL_FEED_ID, ART_COL_CRAWLED,
     CADENCE_POLL_INTERVALS,
     ARTICLE_HARD_LIMIT, ARTICLE_PRUNE_TARGET,
+    MAX_ARTICLE_BODY_CHARS,
 )
 
 log = logging.getLogger(__name__)
@@ -564,6 +565,77 @@ def log_run(summary: dict) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # ARTICLE TABLE SIZE CAP
 # ─────────────────────────────────────────────────────────────────────────────
+
+def fetch_uncrawled_articles(limit: int, max_age_days: int = 7) -> list[dict]:
+    """
+    Fetch articles where is_crawled=False, published within max_age_days,
+    with a title (not empty stubs).  Ordered oldest-first so fresh articles
+    at the front of the queue aren't starved by a flood of old failures.
+
+    Called by recrawl.py to build the retry queue.
+
+    Returns a list of dicts with id, url, domain, top_image_url columns.
+    Returns empty list on DB error (safe to skip — next run will retry).
+    """
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
+    try:
+        resp = (
+            get_client()
+            .table(TABLE_ARTICLES)
+            .select("id, url, domain, top_image_url, og_tags")
+            .eq(ART_COL_CRAWLED, False)
+            .gt("published_at", cutoff)
+            .not_.is_("title", "null")
+            .order("published_at", desc=False)   # oldest failing first
+            .limit(limit)
+            .execute()
+        )
+        rows = resp.data or []
+        log.info("fetch_uncrawled_articles: %d articles to retry (max_age=%dd)", len(rows), max_age_days)
+        return rows
+    except Exception as e:
+        log.error("fetch_uncrawled_articles failed: %s", e)
+        return []
+
+
+def update_article_crawl(
+    article_id: int,
+    full_text: str,
+    is_crawled: bool,
+    crawl_strategy: str,
+    top_image_url: str = "",
+    og_tags: dict | None = None,
+) -> bool:
+    """
+    Write re-crawl results back to an article row.
+
+    Called by recrawl.py after a successful (or permanently-failed) retry.
+    Only updates fields that the re-crawl can meaningfully improve:
+      - full_text / is_crawled / crawl_strategy
+      - top_image_url if we found one and the article had none
+      - og_tags if provided (merges into existing, doesn't overwrite)
+
+    Returns True on success.
+    """
+    patch: dict = {
+        "full_text":       full_text[:MAX_ARTICLE_BODY_CHARS] if full_text else "",
+        "is_crawled":      is_crawled,
+        "crawl_strategy":  crawl_strategy,
+        "crawled_at":      datetime.now(timezone.utc).isoformat(),
+    }
+    if top_image_url:
+        patch["top_image_url"] = top_image_url[:500]
+    if og_tags:
+        patch["og_tags"] = og_tags
+
+    try:
+        get_client().table(TABLE_ARTICLES).update(patch).eq("id", article_id).execute()
+        return True
+    except Exception as e:
+        log.error("update_article_crawl(%s) failed: %s", article_id, e)
+        return False
+
 
 def prune_articles_if_needed() -> int:
     """

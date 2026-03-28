@@ -30,9 +30,7 @@ python-dotenv==1.0.1         # loads .env file
 # Replaces langdetect which was non-deterministic (same text → different results)
 lingua-language-detector>=2.0.0
 
-# Named Entity Recognition
-#   spaCy: English (en_core_web_sm) and multilingual fallback (xx_ent_wiki_sm)
-#   IndicNER (ai4bharat/IndicNER): Indian regional NER via HuggingFace transformers
+# Named Entity Recognition — spaCy for English and multilingual fallback
 #   Download: python -m spacy download en_core_web_sm
 #             python -m spacy download xx_ent_wiki_sm
 spacy==3.8.13
@@ -56,9 +54,6 @@ sentence-transformers>=3.0.0
 # Image perceptual hashing — for image-level dedup and VLM prep
 imagehash==4.3.1
 Pillow==10.4.0
-
-# Propensity scoring — gradient-boosted tree trained on outlet_count signal
-lightgbm>=4.3.0
 
 # ── Testing ───────────────────────────────────────────────────────────────────
 pytest==8.3.3
