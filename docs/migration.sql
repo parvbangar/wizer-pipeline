@@ -36,7 +36,7 @@ CREATE INDEX IF NOT EXISTS pipeline_runs_run_at_idx
 
 CREATE TABLE IF NOT EXISTS articles (
   -- Core identity
-  id               uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  id               bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   feed_id          uuid        REFERENCES feeds(id) ON DELETE CASCADE,
   url              text        NOT NULL,
   url_hash         bigint      NOT NULL,         -- MurmurHash3 of normalised URL
