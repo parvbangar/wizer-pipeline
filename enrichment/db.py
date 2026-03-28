@@ -17,9 +17,10 @@ CONNECTION:
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 
-from supabase import create_client, Client
+from supabase import create_client, Client, ClientOptions
 
 from enrichment.config import (
     SUPABASE_URL, SUPABASE_KEY,
@@ -31,6 +32,12 @@ log = logging.getLogger(__name__)
 
 _client: Client | None = None
 
+# Default postgrest timeout is 120 s — long enough that an idle TCP connection
+# (dropped by OS/Supabase after ~2 min of NLP work) causes every write to hang
+# for the full 2 min before raising ReadTimeout.
+# 20 s is generous for any real write while failing fast on dead connections.
+_DB_TIMEOUT_SECONDS = 20
+
 
 def get_client() -> Client:
     """Return the singleton Supabase client, creating it on first call."""
@@ -40,8 +47,57 @@ def get_client() -> Client:
             raise RuntimeError(
                 "SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in your .env file"
             )
-        _client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        _client = create_client(
+            SUPABASE_URL,
+            SUPABASE_KEY,
+            options=ClientOptions(postgrest_client_timeout=_DB_TIMEOUT_SECONDS),
+        )
     return _client
+
+
+def _reset_client() -> None:
+    """Drop the cached client so the next call to get_client() reconnects."""
+    global _client
+    _client = None
+
+
+def _is_retriable(e: Exception) -> bool:
+    """True for network timeout/connection errors that warrant a reconnect."""
+    import httpx
+    if isinstance(e, (
+        httpx.ReadTimeout,
+        httpx.ConnectTimeout,
+        httpx.PoolTimeout,
+        httpx.ConnectError,
+        httpx.RemoteProtocolError,
+    )):
+        return True
+    # Fallback: check error text for cases wrapped by supabase/postgrest
+    msg = str(e).lower()
+    return "timed out" in msg or "connection refused" in msg or "broken pipe" in msg
+
+
+def _run_with_retry(operation):
+    """
+    Execute a DB operation lambda, retrying once with a fresh connection on timeout.
+
+    WHY:
+      NLP steps (LaBSE, IndicNER, DeBERTa) take 1–5 min per article.
+      During that time the Supabase TCP connection sits idle and is dropped
+      by the network. The first write attempt then times out (20 s with our
+      new limit). We reset the singleton, sleep briefly for the server to
+      drain, and retry — the second attempt opens a fresh TCP connection and
+      almost always succeeds.
+    """
+    try:
+        return operation()
+    except Exception as e:
+        if _is_retriable(e):
+            log.warning("DB connection error — reconnecting and retrying once: %s", e)
+            _reset_client()
+            time.sleep(1)
+            return operation()   # let the caller catch if this also fails
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -171,11 +227,11 @@ def find_nearest_cluster(
     vec_str = "[" + ",".join(f"{v:.6f}" for v in embedding) + "]"
 
     try:
-        resp = get_client().rpc("find_nearest_cluster", {
+        resp = _run_with_retry(lambda: get_client().rpc("find_nearest_cluster", {
             "query_embedding":      vec_str,
             "similarity_threshold": threshold,
             "window_hours":         window_hours,
-        }).execute()
+        }).execute())
         rows = resp.data or []
         return rows[0] if rows else None
     except Exception as e:
@@ -203,7 +259,9 @@ def save_article_enrichment(article_id: str, update: dict) -> bool:
     """
     update["enriched_at"] = datetime.now(timezone.utc).isoformat()
     try:
-        get_client().table(TABLE_ARTICLES).update(update).eq("id", article_id).execute()
+        _run_with_retry(
+            lambda: get_client().table(TABLE_ARTICLES).update(update).eq("id", article_id).execute()
+        )
         return True
     except Exception as e:
         log.error("save_article_enrichment failed for %s: %s", article_id, e)
@@ -229,7 +287,9 @@ def save_entities(article_id: str, entities: list[dict]) -> bool:
 
     # Delete existing entities for this article (handles re-enrichment)
     try:
-        get_client().table(TABLE_ENTITIES).delete().eq("article_id", article_id).execute()
+        _run_with_retry(
+            lambda: get_client().table(TABLE_ENTITIES).delete().eq("article_id", article_id).execute()
+        )
     except Exception:
         pass  # If delete fails, insert will just create duplicates — tolerable
 
@@ -244,7 +304,9 @@ def save_entities(article_id: str, entities: list[dict]) -> bool:
     ]
 
     try:
-        get_client().table(TABLE_ENTITIES).insert(rows).execute()
+        _run_with_retry(
+            lambda: get_client().table(TABLE_ENTITIES).insert(rows).execute()
+        )
         return True
     except Exception as e:
         log.error("save_entities failed for %s: %s", article_id, e)
@@ -273,7 +335,9 @@ def create_cluster(cluster_data: dict) -> str | None:
         )
 
     try:
-        resp = get_client().table(TABLE_CLUSTERS).insert(cluster_data).execute()
+        resp = _run_with_retry(
+            lambda: get_client().table(TABLE_CLUSTERS).insert(cluster_data).execute()
+        )
         rows = resp.data or []
         if rows:
             return rows[0].get("id")
@@ -293,7 +357,9 @@ def update_cluster(cluster_id: str, update: dict) -> bool:
     """
     update["updated_at"] = datetime.now(timezone.utc).isoformat()
     try:
-        get_client().table(TABLE_CLUSTERS).update(update).eq("id", cluster_id).execute()
+        _run_with_retry(
+            lambda: get_client().table(TABLE_CLUSTERS).update(update).eq("id", cluster_id).execute()
+        )
         return True
     except Exception as e:
         log.error("update_cluster failed for %s: %s", cluster_id, e)
