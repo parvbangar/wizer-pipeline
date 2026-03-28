@@ -119,41 +119,40 @@ def enrich_one(
     except Exception as e:
         log.warning("[%s] language detection failed: %s", article_id[:8], e)
 
-    # ── Language gate ─────────────────────────────────────────────────────────
-    # Only fully enrich English and Hindi. Other languages get text_stats +
-    # language_detected saved, then marked enriched_at so they don't re-queue.
     lang_base = (language_detected or "").split("-")[0].lower()
-    if ENRICH_SUPPORTED_LANGUAGES and lang_base not in ENRICH_SUPPORTED_LANGUAGES:
-        log.debug("[%s] Skipping enrichment — unsupported language: %s", article_id, language_detected)
-        return update, [], None, "skip"
+    rich_enrich = not ENRICH_SUPPORTED_LANGUAGES or lang_base in ENRICH_SUPPORTED_LANGUAGES
 
-    # ── Step 3: Sentiment ─────────────────────────────────────────────────────
-    try:
-        sentiment_result = analyse_sentiment(title, description, language_detected)
-        update.update(sentiment_result)
-    except Exception as e:
-        log.warning("[%s] sentiment failed: %s", article_id[:8], e)
+    # ── Step 3: Sentiment (English + Hindi only) ──────────────────────────────
+    if rich_enrich:
+        try:
+            sentiment_result = analyse_sentiment(title, description, language_detected)
+            update.update(sentiment_result)
+        except Exception as e:
+            log.warning("[%s] sentiment failed: %s", article_id[:8], e)
 
-    # ── Step 4: NER ───────────────────────────────────────────────────────────
+    # ── Step 4: NER (English + Hindi only) ───────────────────────────────────
     entities: list[dict] = []
-    try:
-        entities = extract_entities(title, full_text, description, language_detected)
-    except Exception as e:
-        log.warning("[%s] NER failed: %s", article_id[:8], e)
+    if rich_enrich:
+        try:
+            entities = extract_entities(title, full_text, description, language_detected)
+        except Exception as e:
+            log.warning("[%s] NER failed: %s", article_id[:8], e)
 
-    # ── Step 5: Keywords ──────────────────────────────────────────────────────
-    try:
-        keywords = extract_keywords(title, full_text, description)
-        update["keywords"] = keywords if keywords else None
-    except Exception as e:
-        log.warning("[%s] keyword extraction failed: %s", article_id[:8], e)
+    # ── Step 5: Keywords (English + Hindi only) ──────────────────────────────
+    if rich_enrich:
+        try:
+            keywords = extract_keywords(title, full_text, description)
+            update["keywords"] = keywords if keywords else None
+        except Exception as e:
+            log.warning("[%s] keyword extraction failed: %s", article_id[:8], e)
 
-    # ── Step 6: Category classification ──────────────────────────────────────
-    try:
-        category = classify_article(title, description, article.get("iab_tier1") or "", full_text)
-        update["category"] = category
-    except Exception as e:
-        log.warning("[%s] classifier failed: %s", article_id[:8], e)
+    # ── Step 6: Category classification (English + Hindi only) ───────────────
+    if rich_enrich:
+        try:
+            category = classify_article(title, description, article.get("iab_tier1") or "", full_text)
+            update["category"] = category
+        except Exception as e:
+            log.warning("[%s] classifier failed: %s", article_id[:8], e)
 
     # ── Step 7: Image pHash ───────────────────────────────────────────────────
     try:
@@ -162,7 +161,7 @@ def enrich_one(
     except Exception as e:
         log.warning("[%s] image hashing failed: %s", article_id[:8], e)
 
-    # ── Step 8: Story clustering ──────────────────────────────────────────────
+    # ── Step 8: Story clustering (ALL languages — every article contributes) ──
     # Uses pgvector HNSW: one SQL query per article, no in-memory cluster list.
     cluster_id      = None
     cluster_payload = None
