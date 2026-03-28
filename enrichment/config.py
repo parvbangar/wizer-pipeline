@@ -52,6 +52,16 @@ TABLE_CLUSTERS  = "article_clusters"
 ENRICH_BATCH_SIZE    = int(os.getenv("ENRICH_BATCH_SIZE",    "500"))
 ENRICH_MIN_WORD_COUNT = int(os.getenv("ENRICH_MIN_WORD_COUNT", "50"))
 
+# Languages to fully enrich (NER, clustering, sentiment, keywords, classification).
+# Articles in other languages get text_stats + language_detected only, then marked done.
+# Set to empty set to enrich all languages.
+# "en" covers en, en-in, en-us etc — the gate checks startswith in runner.
+_supported = os.getenv("ENRICH_SUPPORTED_LANGUAGES", "en,hi")
+ENRICH_SUPPORTED_LANGUAGES: set[str] = (
+    {lang.strip() for lang in _supported.split(",") if lang.strip()}
+    if _supported.strip() else set()
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP: TEXT STATS

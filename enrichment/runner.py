@@ -51,7 +51,7 @@ import time
 from datetime import datetime, timezone
 
 from enrichment import db
-from enrichment.config import ENRICH_BATCH_SIZE, ENRICH_MIN_WORD_COUNT
+from enrichment.config import ENRICH_BATCH_SIZE, ENRICH_MIN_WORD_COUNT, ENRICH_SUPPORTED_LANGUAGES
 from enrichment.steps.text_stats  import compute_text_stats
 from enrichment.steps.language    import detect_language
 from enrichment.steps.sentiment   import analyse_sentiment
@@ -118,6 +118,14 @@ def enrich_one(
         update["language_detected"] = language_detected
     except Exception as e:
         log.warning("[%s] language detection failed: %s", article_id[:8], e)
+
+    # ── Language gate ─────────────────────────────────────────────────────────
+    # Only fully enrich English and Hindi. Other languages get text_stats +
+    # language_detected saved, then marked enriched_at so they don't re-queue.
+    lang_base = (language_detected or "").split("-")[0].lower()
+    if ENRICH_SUPPORTED_LANGUAGES and lang_base not in ENRICH_SUPPORTED_LANGUAGES:
+        log.debug("[%s] Skipping enrichment — unsupported language: %s", article_id, language_detected)
+        return update, [], None, "skip"
 
     # ── Step 3: Sentiment ─────────────────────────────────────────────────────
     try:
