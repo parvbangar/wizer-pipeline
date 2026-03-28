@@ -107,7 +107,7 @@ LANG_DETECT_MIN_CHARS = 20
 #   Below this → return 'general'. Prevents low-confidence mislabelling.
 # ─────────────────────────────────────────────────────────────────────────────
 DEBERTA_MODEL               = os.getenv("DEBERTA_MODEL", "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli")
-CLASSIFY_CONFIDENCE_THRESHOLD = float(os.getenv("CLASSIFY_CONFIDENCE_THRESHOLD", "0.30"))
+CLASSIFY_CONFIDENCE_THRESHOLD = float(os.getenv("CLASSIFY_CONFIDENCE_THRESHOLD", "0.15"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
