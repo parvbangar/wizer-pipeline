@@ -125,7 +125,7 @@ def _build_features(
         (e.get("salience", 0.0) for e in entities),
         reverse=True,
     )[:5]
-    avg_salience = sum(top5_salience) / 5 if top5_salience else 0.0
+    avg_salience = sum(top5_salience) / len(top5_salience) if top5_salience else 0.0
 
     return [
         float(update.get("word_count") or 0),

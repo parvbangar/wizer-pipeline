@@ -85,7 +85,7 @@ ALTER TABLE articles ADD COLUMN IF NOT EXISTS image_phash       bigint;
 
 CREATE TABLE IF NOT EXISTS article_entities (
   id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-  article_id   bigint      NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+  article_id   uuid        NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
   entity_text  text        NOT NULL,
   entity_type  text        NOT NULL,
   salience     float       NOT NULL DEFAULT 0.5,
@@ -146,7 +146,7 @@ CREATE INDEX IF NOT EXISTS article_entities_salience_idx
 
 CREATE TABLE IF NOT EXISTS article_clusters (
   id                   uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-  canonical_article_id bigint,                   -- soft FK → articles.id (bigint)
+  canonical_article_id uuid,                    -- soft FK → articles.id (uuid)
   headline             text,
   outlet_count         integer     NOT NULL DEFAULT 1,
   article_count        integer     NOT NULL DEFAULT 1,
