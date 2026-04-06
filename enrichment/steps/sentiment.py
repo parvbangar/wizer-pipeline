@@ -78,13 +78,16 @@ def analyse_sentiment(
     """
     null_result = {"sentiment": None, "sentiment_score": None}
 
-    text = f"{title or ''} {description or ''}".strip()
+    # Title + description is where sentiment signal is strongest in news.
+    # We pass up to ~1000 chars (≈200 tokens) — well within the 512-token limit.
+    # truncation=True ensures the pipeline handles long inputs safely.
+    text = f"{title or ''}. {description or ''}".strip()
     if not text:
         return null_result
 
     try:
         pipe    = _get_pipeline()
-        results = pipe(text[:512])
+        results = pipe(text[:1000], truncation=True, max_length=512)
         # top_k=None → [[{'label': 'positive', 'score': 0.9}, ...]]
         scores    = results[0] if results else []
         score_map = {r["label"]: r["score"] for r in scores}

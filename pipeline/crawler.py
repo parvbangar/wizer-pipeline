@@ -634,19 +634,34 @@ def _extract_rss_fulltext(entry: dict) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _extract_fulltext_trafilatura(html: str, url: str) -> str:
-    """Primary extractor — trafilatura is purpose-built for news articles."""
+    """
+    Primary extractor — trafilatura is purpose-built for news articles.
+
+    Tries precision mode first (strips sidebars, share prompts, and nav
+    elements aggressively).  If the result is too short (<300 chars) it
+    falls back to balanced mode, which recovers articles on unusual layouts
+    at the cost of occasionally including some boilerplate.
+    """
     try:
         import trafilatura
-        result = trafilatura.extract(
-            html,
+
+        common = dict(
             url=url,
             include_comments=False,
             include_tables=False,
             include_links=False,
             no_fallback=False,
-            favor_precision=False,
         )
+
+        # Precision mode: removes sidebars / ads / nav / share prompts
+        result = trafilatura.extract(html, favor_precision=True, **common)
+        if result and len(result) >= 300:
+            return result
+
+        # Balanced mode: recovers content on unusual page layouts
+        result = trafilatura.extract(html, favor_precision=False, **common)
         return result or ""
+
     except ImportError:
         log.debug("trafilatura not installed")
         return ""
@@ -719,37 +734,130 @@ def _extract_fulltext_bs4(html: str) -> str:
         return ""
 
 
+def _clean_boilerplate(text: str) -> str:
+    """
+    Remove editorial boilerplate lines from extracted article text.
+
+    Targets patterns that NLP extractors (trafilatura, readability) sometimes
+    leave behind: subscription CTAs, "Also Read" links, social share prompts,
+    copyright footers, and navigation cruft.
+
+    Strategy: line-by-line pass — only removes lines that match explicit
+    boilerplate patterns.  Does NOT touch lines that look like real sentences
+    so legitimate article content is never damaged.
+    """
+    if not text:
+        return text
+
+    _LINE_RE = re.compile(
+        r"(?i)("
+        # Reading prompts / cross-links
+        r"also\s+read|read\s+also|read\s+more|more\s+on\s+this"
+        r"|related\s+(news|stories|articles|coverage)"
+        r"|you\s+may\s+(also\s+)?like|don.t\s+miss"
+        # Subscription / follow CTAs
+        r"|subscribe\s+(to|now|for|here)|sign\s+up\s+(for|to|here)"
+        r"|join\s+our\s+(newsletter|channel|group|community|telegram|whatsapp)"
+        r"|follow\s+us\s+on|download\s+(the\s+)?(app|our\s+app)"
+        r"|get\s+(the\s+)?(latest|breaking|live)\s+news"
+        r"|stay\s+updated|for\s+latest\s+updates"
+        # Social sharing
+        r"|share\s+(this\s+)?(article|story|post|on)|tweet\s+this|share\s+via"
+        # Legal / copyright
+        r"|copyright\s+©|©\s+\d{4}|all\s+rights\s+reserved"
+        r"|terms\s+of\s+(use|service)|privacy\s+policy"
+        # Ads / sponsored
+        r"|advertisement|sponsored\s+content|partner\s+content|paid\s+post"
+        # Click prompts
+        r"|click\s+here\s+to|tap\s+here\s+to|watch\s+live\s+on"
+        # Editorial markers
+        r"|disclaimer\s*:|editor.?s\s+note\s*:|correction\s*:"
+        # Byline boilerplate (The Independent-style preambles)
+        r"|independent\.co\.uk|please\s+allow\s+a\s+moment"
+        r")"
+    )
+
+    lines = text.splitlines()
+    clean: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            clean.append("")
+            continue
+        # Skip lines matching boilerplate patterns
+        if _LINE_RE.search(stripped):
+            continue
+        # Skip bare URLs
+        if re.match(r"^https?://\S+$", stripped):
+            continue
+        # Skip lines that are just a social handle
+        if re.match(r"^@\w{1,30}\s*$", stripped):
+            continue
+        clean.append(line)
+
+    # Collapse runs of blank lines to at most one
+    result = re.sub(r"\n{3,}", "\n\n", "\n".join(clean)).strip()
+    return result
+
+
+def _score_candidate(text: str) -> float:
+    """
+    Quality score for an extracted text candidate.
+
+    Combines length (more text is generally better) with a penalty for
+    boilerplate density.  A 500-word clean article beats a 1000-word article
+    that is 40% subscription prompts.
+    """
+    if not text:
+        return 0.0
+    words = text.split()
+    if not words:
+        return 0.0
+    # Rough boilerplate word density
+    bp_words = {"subscribe", "newsletter", "follow", "advertisement",
+                "click", "tap", "share", "tweet", "copyright", "disclaimer"}
+    bp_count = sum(1 for w in words if w.lower() in bp_words)
+    bp_ratio = bp_count / len(words)
+    # Score: word count minus heavy boilerplate penalty
+    return len(words) * (1.0 - min(bp_ratio * 4, 0.9))
+
+
 def _best_fulltext(html: str, url: str) -> str:
     """
-    Try all text extractors in order and return the longest result that meets
-    the minimum length threshold.  Longer generally means more complete.
+    Try all text extractors in order, clean each result, and return the
+    highest-quality one.
+
+    Quality = word count × (1 − boilerplate_density), so a shorter but
+    clean article beats a longer boilerplate-bloated one.
     """
     candidates: list[str] = []
 
+    # trafilatura: try precision mode first (avoids sidebars / share prompts),
+    # fall back to balanced mode if precision yields too little.
     t = _extract_fulltext_trafilatura(html, url)
     if t:
-        candidates.append(t)
+        candidates.append(_clean_boilerplate(t))
 
     r = _extract_fulltext_readability(html)
     if r:
-        candidates.append(r)
+        candidates.append(_clean_boilerplate(r))
 
     # newspaper3k re-fetches so it's expensive — only call if we have nothing
     if not candidates:
         n = _extract_fulltext_newspaper(url)
         if n:
-            candidates.append(n)
+            candidates.append(_clean_boilerplate(n))
 
     if not candidates:
         b = _extract_fulltext_bs4(html)
         if b:
-            candidates.append(b)
+            candidates.append(_clean_boilerplate(b))
 
     if not candidates:
         return ""
 
-    # Return the longest result (more text = more complete extraction)
-    return max(candidates, key=len)
+    # Return the highest-quality candidate
+    return max(candidates, key=_score_candidate)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

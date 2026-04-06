@@ -82,47 +82,54 @@ def _get_pipeline():
 
 # ── Category labels ────────────────────────────────────────────────────────────
 #
-# Labels are English phrases that best describe each category.
-# Descriptive phrases work better than single words — "politics and elections"
-# is a clearer hypothesis than just "politics".
+# Labels are written as NLI hypothesis completions.
+# The transformers zero-shot pipeline internally forms:
+#   "This example is [label]."
+# So labels must read naturally in that template.
 #
-# The map converts the winning label back to the short category key stored in DB.
+# Keyword-soup labels ("cricket IPL T20 batting...") do NOT work well because
+# the model is trained on natural-language entailment, not keyword matching.
+# "about cricket or the IPL" reads as a proper hypothesis; a keyword list does not.
+#
+# Labels are kept distinct so the softmax spread is clean:
+#   - "cricket" is separate from "sports" to avoid splitting cricket traffic
+#   - "international news" is scoped narrowly to avoid absorbing everything that
+#     mentions a foreign country (which caused the 37% "world" overcounting bug)
 
 _CANDIDATE_LABELS = [
-    "cricket IPL T20 Test match batting bowling wicket",
-    "Indian politics election BJP Congress Modi government",
-    "business economy market stocks finance company earnings",
-    "Bollywood movies music entertainment celebrity actor",
-    "technology startup software app artificial intelligence",
-    "sports football kabaddi hockey athletics badminton",
-    "health hospital medicine disease doctor treatment",
-    "school college university education exam student",
-    "crime police arrest murder court fraud investigation",
-    "environment climate change flood drought pollution",
-    "international foreign country global diplomacy war",
-    "cryptocurrency bitcoin blockchain digital currency",
+    "about cricket, the IPL, or a cricket match or tournament",
+    "about Indian politics, elections, parliament, or government policy",
+    "about business, the economy, stock markets, or corporate finance",
+    "about Bollywood, movies, music, entertainment, or Indian celebrities",
+    "about technology, software, artificial intelligence, or tech startups",
+    "about sports other than cricket, such as football, hockey, kabaddi, or athletics",
+    "about health, medicine, hospitals, disease, or public healthcare",
+    "about education, schools, colleges, university exams, or student affairs",
+    "about crime, police, courts, arrests, or legal investigations",
+    "about the environment, climate change, floods, droughts, or pollution",
+    "about international relations, foreign affairs, or events outside India",
+    "about cryptocurrency, bitcoin, blockchain, or digital currency",
 ]
 
 _LABEL_TO_CATEGORY: dict[str, str] = {
-    "cricket IPL T20 Test match batting bowling wicket":         "cricket",
-    "Indian politics election BJP Congress Modi government":      "politics",
-    "business economy market stocks finance company earnings":    "business",
-    "Bollywood movies music entertainment celebrity actor":       "entertainment",
-    "technology startup software app artificial intelligence":    "technology",
-    "sports football kabaddi hockey athletics badminton":         "sports",
-    "health hospital medicine disease doctor treatment":          "health",
-    "school college university education exam student":           "education",
-    "crime police arrest murder court fraud investigation":       "crime",
-    "environment climate change flood drought pollution":         "environment",
-    "international foreign country global diplomacy war":         "world",
-    "cryptocurrency bitcoin blockchain digital currency":         "crypto",
+    "about cricket, the IPL, or a cricket match or tournament":                             "cricket",
+    "about Indian politics, elections, parliament, or government policy":                   "politics",
+    "about business, the economy, stock markets, or corporate finance":                     "business",
+    "about Bollywood, movies, music, entertainment, or Indian celebrities":                 "entertainment",
+    "about technology, software, artificial intelligence, or tech startups":                "technology",
+    "about sports other than cricket, such as football, hockey, kabaddi, or athletics":     "sports",
+    "about health, medicine, hospitals, disease, or public healthcare":                     "health",
+    "about education, schools, colleges, university exams, or student affairs":             "education",
+    "about crime, police, courts, arrests, or legal investigations":                        "crime",
+    "about the environment, climate change, floods, droughts, or pollution":                "environment",
+    "about international relations, foreign affairs, or events outside India":              "world",
+    "about cryptocurrency, bitcoin, blockchain, or digital currency":                       "crypto",
 }
 
 
 def classify_article(
     title: str,
     description: str,
-    iab_tier1: str,
     full_text: str = "",
 ) -> str:
     """
@@ -131,18 +138,19 @@ def classify_article(
     Args:
       title:       Article headline (most informative signal)
       description: RSS description / summary
-      iab_tier1:   Feed-level IAB category (used as fallback tiebreaker)
-      full_text:   Article body — first 200 chars used for extra context
+      full_text:   Article body — first 500 chars used for extra context
 
     Returns:
       Category string: cricket | politics | business | entertainment |
                        technology | sports | health | education | crime |
                        environment | world | crypto | general
     """
-    # Build the text to classify.
-    # Title is the strongest signal. Description and start of full_text
-    # provide additional context without exceeding mDeBERTa's token limit.
-    text = f"{title}. {description} {(full_text or '')[:200]}".strip()
+    # Build the classification text.
+    # Title carries the strongest signal; description and start of full_text
+    # add context.  We use up to ~1500 chars which stays well within mDeBERTa's
+    # 512-token limit for English/Hindi (~4 chars/token on average).
+    body_prefix = (full_text or "").strip()[:500]
+    text = f"{title}. {description} {body_prefix}".strip()
 
     if not text:
         return "general"
@@ -150,7 +158,7 @@ def classify_article(
     try:
         clf = _get_pipeline()
         result = clf(
-            text[:512],           # mDeBERTa tokenizer limit
+            text[:1500],
             candidate_labels=_CANDIDATE_LABELS,
             multi_label=False,
         )

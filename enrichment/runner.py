@@ -135,7 +135,7 @@ def enrich_one(
     # ── Step 5: Keywords (English + Hindi only) ──────────────────────────────
     if rich_enrich:
         try:
-            keywords = extract_keywords(title, full_text, description)
+            keywords = extract_keywords(title, full_text, description, language_detected)
             update["keywords"] = keywords if keywords else None
         except Exception as e:
             log.warning("[%s] keyword extraction failed: %s", article_id[:8], e)
@@ -143,7 +143,7 @@ def enrich_one(
     # ── Step 6: Category classification (English + Hindi only) ───────────────
     if rich_enrich:
         try:
-            category = classify_article(title, description, article.get("iab_tier1") or "", full_text)
+            category = classify_article(title, description, full_text)
             update["category"] = category
         except Exception as e:
             log.warning("[%s] classifier failed: %s", article_id[:8], e)

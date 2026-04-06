@@ -21,8 +21,6 @@ HOW YAKE WORKS (simplified):
 WHAT KEYWORDS ARE USED FOR:
   - App layer: article tags shown to users
   - Search: full-text search augmentation
-  - Layer 3 propensity scoring: keyword overlap with user interest graph
-  - GNews queries: search API with top keywords instead of full title
 
 STORED AS: jsonb array in articles.keywords
   e.g. ["Narendra Modi", "Budget 2024", "GST reform", "direct tax"]
@@ -38,8 +36,36 @@ from enrichment.config import MAX_KEYWORDS, KEYWORD_MAX_NGRAM, KEYWORD_DEDUP_THR
 
 log = logging.getLogger(__name__)
 
+# YAKE language code map.
+# YAKE has explicit stopword lists for these codes; others fall back to a
+# generic (no-stopword) mode which still works but slightly less precisely.
+_YAKE_LANG_MAP: dict[str, str] = {
+    "en": "en", "hi": "hi", "ar": "ar", "de": "de", "es": "es",
+    "fr": "fr", "it": "it", "nl": "nl", "pt": "pt", "ru": "ru",
+    "tr": "tr", "zh": "zh",
+}
 
-def extract_keywords(title: str, full_text: str, description: str) -> list[str]:
+# Keywords that are pure editorial boilerplate — they appear in contaminated
+# full_text extractions (subscribe CTAs, share prompts, nav headers) and carry
+# no news value.  Filtered after YAKE extraction.
+_BOILERPLATE_KW: frozenset[str] = frozenset({
+    "read more", "also read", "read also", "related news", "related stories",
+    "subscribe", "newsletter", "sign up", "follow us", "download app",
+    "click here", "tap here", "watch live", "share this", "share on",
+    "tweet", "breaking news", "latest news", "top stories", "more stories",
+    "advertisement", "sponsored", "partner content", "paid post",
+    "terms of use", "privacy policy", "all rights reserved", "copyright",
+    "stay updated", "get latest", "find out more", "learn more",
+    "read full story", "read full article",
+})
+
+
+def extract_keywords(
+    title: str,
+    full_text: str,
+    description: str,
+    language_detected: str | None = None,
+) -> list[str]:
     """
     Extract top keywords from article content.
 
@@ -47,9 +73,11 @@ def extract_keywords(title: str, full_text: str, description: str) -> list[str]:
     higher due to position weighting, which is what we want.
 
     Args:
-      title:       Article headline
-      full_text:   Article body text
-      description: RSS description (fallback)
+      title:             Article headline
+      full_text:         Article body text
+      description:       RSS description (fallback)
+      language_detected: ISO language code from the language step — used to
+                         give YAKE the correct stopword list (e.g. "hi" for Hindi)
 
     Returns:
       List of keyword strings, e.g. ["Narendra Modi", "budget 2024"]
@@ -62,19 +90,37 @@ def extract_keywords(title: str, full_text: str, description: str) -> list[str]:
     if len(text.strip()) < 30:
         return []
 
+    # Map detected language to the closest YAKE code; fall back to "en"
+    lang_base = (language_detected or "en").split("-")[0].lower()
+    yake_lang = _YAKE_LANG_MAP.get(lang_base, "en")
+
     try:
         import yake
         extractor = yake.KeywordExtractor(
-            lan="en",                           # language hint (YAKE adapts regardless)
+            lan=yake_lang,                      # language-specific stopwords
             n=KEYWORD_MAX_NGRAM,                # max ngram size
             dedupLim=KEYWORD_DEDUP_THRESHOLD,   # deduplication threshold
-            top=MAX_KEYWORDS,                   # how many to return
+            top=MAX_KEYWORDS * 2,               # extract extra so we can filter boilerplate
             features=None,
         )
         # Returns list of (keyword, score) tuples — lower score = more important
-        keywords_with_scores = extractor.extract_keywords(text)
-        # Return just the keyword strings (not the scores)
-        return [kw for kw, _ in keywords_with_scores]
+        raw = extractor.extract_keywords(text)
+
+        # Filter boilerplate and return top MAX_KEYWORDS
+        result: list[str] = []
+        for kw, _ in raw:
+            kw_lower = kw.lower().strip()
+            if kw_lower in _BOILERPLATE_KW:
+                continue
+            if any(bp in kw_lower for bp in _BOILERPLATE_KW):
+                continue
+            if len(kw_lower) < 3:
+                continue
+            result.append(kw)
+            if len(result) >= MAX_KEYWORDS:
+                break
+
+        return result
 
     except ImportError:
         log.warning("yake not installed — skipping keyword extraction. Run: pip install yake")
