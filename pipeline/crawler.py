@@ -51,6 +51,7 @@ MEDIA EXTRACTION
 
 from __future__ import annotations
 
+import html as html_module
 import json
 import logging
 import re
@@ -608,8 +609,6 @@ def _extract_rss_fulltext(entry: dict) -> str:
     This is the cheapest possible extraction — no HTTP request needed.
     We prefer this over crawling when available and long enough (>500 chars).
     """
-    import html as html_module
-
     def _strip_and_decode(raw: str) -> str:
         """Strip HTML tags then decode HTML entities (&#8216; → ', &amp; → &)."""
         stripped = re.sub(r"<[^>]+>", " ", raw)
@@ -930,7 +929,7 @@ def crawl_article(
         log.debug("PAYWALLED — trying Googlebot/AMP/Wayback: %s", norm_url)
 
     # ── STEP 1: What RSS gives us for free ───────────────────────────────────
-    rss_title       = (rss_entry.get("title") or "").strip()
+    rss_title       = html_module.unescape((rss_entry.get("title") or "").strip())
     rss_description = _extract_rss_description(rss_entry)
     rss_image       = _extract_rss_image(rss_entry)
     rss_author      = _extract_author(rss_entry, {}, {})
@@ -986,7 +985,7 @@ def crawl_article(
     full_text = _best_fulltext(html, norm_url)
 
     # Merge metadata — crawled page beats RSS data
-    article.title        = og.get("og:title") or jsonld.get("headline") or rss_title
+    article.title        = html_module.unescape(og.get("og:title") or jsonld.get("headline") or rss_title)
     article.description  = og.get("og:description") or jsonld.get("description") or rss_description
     article.top_image_url = (
         og.get("og:image")
