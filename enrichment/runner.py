@@ -33,10 +33,14 @@ STEP EXECUTION ORDER:
   1. text_stats   — independent, no deps
   2. language     — independent, no deps
   3. sentiment    — depends on language_detected (for English-only gate)
+                    also produces: sentiment_stats (full score breakdown)
   4. ner          — independent, no deps
+                    also produces: ai_region (top GPE entities), ai_org (top ORG entities)
   5. keywords     — independent, no deps
   6. classifier   — independent, no deps
-  7. images       — independent, no deps
+  7. tags         — reuses mDeBERTa (same model as step 6, already in memory)
+  8. summary      — independent, no model (extractive, regex-based)
+  9. images       — independent, no deps
 """
 
 from __future__ import annotations
@@ -52,7 +56,8 @@ from enrichment.steps.language    import detect_language
 from enrichment.steps.sentiment   import analyse_sentiment
 from enrichment.steps.ner         import extract_entities
 from enrichment.steps.keywords    import extract_keywords
-from enrichment.steps.classifier  import classify_article
+from enrichment.steps.classifier  import classify_article, classify_tags
+from enrichment.steps.summarizer  import summarize_article
 from enrichment.steps.images      import download_and_hash_image
 
 log = logging.getLogger(__name__)
@@ -132,6 +137,23 @@ def enrich_one(
         except Exception as e:
             log.warning("[%s] NER failed: %s", article_id[:8], e)
 
+    # Derive ai_region and ai_org from NER output — free, no extra compute.
+    # ai_region: top GPE (geopolitical) entities by salience → geographic focus
+    # ai_org:    top ORG entities by salience → organisations mentioned
+    if entities:
+        ai_region = [
+            e["entity_text"].lower()
+            for e in entities if e["entity_type"] == "GPE"
+        ][:5]
+        ai_org = [
+            e["entity_text"].lower()
+            for e in entities if e["entity_type"] == "ORG"
+        ][:5]
+        if ai_region:
+            update["ai_region"] = ai_region
+        if ai_org:
+            update["ai_org"] = ai_org
+
     # ── Step 5: Keywords (English + Hindi only) ──────────────────────────────
     if rich_enrich:
         try:
@@ -148,7 +170,25 @@ def enrich_one(
         except Exception as e:
             log.warning("[%s] classifier failed: %s", article_id[:8], e)
 
-    # ── Step 7: Image pHash ───────────────────────────────────────────────────
+    # ── Step 7: AI topic tags (English + Hindi only) ─────────────────────────
+    # Reuses the mDeBERTa pipeline already loaded by step 6 — no extra RAM.
+    # multi_label classification against 20 fine-grained topic labels.
+    if rich_enrich:
+        try:
+            tags = classify_tags(title, description, full_text)
+            update["ai_tag"] = tags if tags else None
+        except Exception as e:
+            log.warning("[%s] tag classification failed: %s", article_id[:8], e)
+
+    # ── Step 8: Extractive summary (all languages) ───────────────────────────
+    # No model — first 3 sentences of full_text or description if rich.
+    try:
+        summary = summarize_article(full_text, description)
+        update["ai_summary"] = summary
+    except Exception as e:
+        log.warning("[%s] summarization failed: %s", article_id[:8], e)
+
+    # ── Step 9: Image pHash ───────────────────────────────────────────────────
     try:
         image_phash = download_and_hash_image(image_url)
         update["image_phash"] = image_phash

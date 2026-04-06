@@ -117,6 +117,10 @@ DEBERTA_MODEL               = os.getenv("DEBERTA_MODEL", "MoritzLaurer/mDeBERTa-
 # per label ≈ 0.083. 0.15 was barely above chance, causing mass misclassification
 # into "world" (confirmed: 37% of articles classified as "world" in production).
 CLASSIFY_CONFIDENCE_THRESHOLD = float(os.getenv("CLASSIFY_CONFIDENCE_THRESHOLD", "0.35"))
+# Minimum per-tag sigmoid score to include a tag in ai_tag.
+# multi_label=True uses sigmoid (not softmax), so scores are independent.
+# 0.25 keeps only tags the model is reasonably confident about.
+CLASSIFY_TAG_THRESHOLD        = float(os.getenv("CLASSIFY_TAG_THRESHOLD",        "0.25"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

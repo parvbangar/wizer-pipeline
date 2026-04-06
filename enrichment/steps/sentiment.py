@@ -100,9 +100,18 @@ def analyse_sentiment(
         neg       = score_map.get("negative", 0.0)
         compound  = round(pos - neg, 4)
 
+        # sentiment_stats mirrors the NewsData.io format:
+        # {positive: 99.93, neutral: 0.05, negative: 0.02} (percentages)
+        sentiment_stats = {
+            "positive": round(score_map.get("positive", 0.0) * 100, 2),
+            "neutral":  round(score_map.get("neutral",  0.0) * 100, 2),
+            "negative": round(score_map.get("negative", 0.0) * 100, 2),
+        }
+
         return {
             "sentiment":       top_label,
             "sentiment_score": compound,
+            "sentiment_stats": sentiment_stats,
         }
     except ImportError as e:
         log.warning("Sentiment skipped: %s", e)

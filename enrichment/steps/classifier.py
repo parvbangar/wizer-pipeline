@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import logging
 
-from enrichment.config import DEBERTA_MODEL, CLASSIFY_CONFIDENCE_THRESHOLD
+from enrichment.config import DEBERTA_MODEL, CLASSIFY_CONFIDENCE_THRESHOLD, CLASSIFY_TAG_THRESHOLD
 
 log = logging.getLogger(__name__)
 
@@ -180,3 +180,112 @@ def classify_article(
     except Exception as e:
         log.warning("Classification failed (%s) — returning 'general'", e)
         return "general"
+
+
+# ── AI topic tags — finer-grained multi-label tags ─────────────────────────────
+#
+# These complement the single primary category with up to 5 specific topic tags.
+# Examples:
+#   Category "politics" → ai_tag ["government", "monetary policy", "economic policy"]
+#   Category "technology" → ai_tag ["artificial intelligence", "startup"]
+#
+# Labels are written as NLI hypothesis completions (same template as above).
+# multi_label=True → independent sigmoid per label (scores are NOT softmax-normalized).
+# Tags with score ≥ CLASSIFY_TAG_THRESHOLD are kept (default 0.25).
+
+_TAG_CANDIDATE_LABELS = [
+    "about government policy or legislation",
+    "about elections or political campaigns",
+    "about financial markets or stock exchange",
+    "about corporate earnings or company results",
+    "about monetary policy or central bank interest rates",
+    "about economic policy or fiscal measures",
+    "about a cricket match or cricket tournament",
+    "about a sports competition or athletic event",
+    "about Bollywood films or the entertainment industry",
+    "about a public health crisis or disease outbreak",
+    "about medical treatment or healthcare system",
+    "about education reform or academic examinations",
+    "about a crime investigation or criminal trial",
+    "about technology product launch or digital innovation",
+    "about artificial intelligence or machine learning",
+    "about an environmental disaster or climate event",
+    "about international diplomacy or foreign policy",
+    "about military conflict or armed forces",
+    "about startup funding or entrepreneurship",
+    "about space research or scientific discovery",
+]
+
+_TAG_LABEL_TO_TAG: dict[str, str] = {
+    "about government policy or legislation":               "government",
+    "about elections or political campaigns":               "elections",
+    "about financial markets or stock exchange":            "financial markets",
+    "about corporate earnings or company results":          "corporate",
+    "about monetary policy or central bank interest rates": "monetary policy",
+    "about economic policy or fiscal measures":             "economic policy",
+    "about a cricket match or cricket tournament":          "cricket",
+    "about a sports competition or athletic event":         "sports",
+    "about Bollywood films or the entertainment industry":  "entertainment",
+    "about a public health crisis or disease outbreak":     "public health",
+    "about medical treatment or healthcare system":         "healthcare",
+    "about education reform or academic examinations":      "education",
+    "about a crime investigation or criminal trial":        "crime",
+    "about technology product launch or digital innovation":"technology",
+    "about artificial intelligence or machine learning":    "artificial intelligence",
+    "about an environmental disaster or climate event":     "environment",
+    "about international diplomacy or foreign policy":      "foreign policy",
+    "about military conflict or armed forces":              "conflict",
+    "about startup funding or entrepreneurship":            "startup",
+    "about space research or scientific discovery":         "science",
+}
+
+
+def classify_tags(
+    title: str,
+    description: str,
+    full_text: str = "",
+) -> list[str]:
+    """
+    Return up to 5 fine-grained topic tags for an article.
+
+    Uses the same mDeBERTa pipeline as classify_article() (already in memory).
+    Runs with multi_label=True so each tag is scored independently — an article
+    can match multiple tags simultaneously.
+
+    Args:
+      title:       Article headline
+      description: RSS/OG description
+      full_text:   Article body — first 500 chars for context
+
+    Returns:
+      List of tag strings, e.g. ["government", "monetary policy", "economic policy"]
+      Returns empty list on error or low-confidence articles.
+    """
+    body_prefix = (full_text or "").strip()[:500]
+    text = f"{title}. {description} {body_prefix}".strip()
+
+    if not text:
+        return []
+
+    try:
+        clf = _get_pipeline()
+        result = clf(
+            text[:1500],
+            candidate_labels=_TAG_CANDIDATE_LABELS,
+            multi_label=True,   # independent sigmoid score per tag
+        )
+
+        tags: list[str] = []
+        for label, score in zip(result["labels"], result["scores"]):
+            if score >= CLASSIFY_TAG_THRESHOLD:
+                tag = _TAG_LABEL_TO_TAG.get(label)
+                if tag:
+                    tags.append(tag)
+            if len(tags) >= 5:
+                break
+
+        return tags
+
+    except Exception as e:
+        log.warning("Tag classification failed (%s) — returning []", e)
+        return []
