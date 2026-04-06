@@ -31,7 +31,7 @@ import re
 # Hindi Devanagari letter (\\u0900-\\u097F), or opening quote.
 # This handles English and Hindi without a tokenizer.
 _SENT_SPLIT_RE = re.compile(
-    r'(?<=[.!?।])\s+(?=[A-Z"\''\u0900-\u097F\u0600-\u06FF])'
+    r'(?<=[.!?\u0964])\s+(?=[A-Z\u0900-\u097F\u0600-\u06FF])'
 )
 
 
