@@ -1,17 +1,18 @@
 name: Layer 2 — Metadata Enrichment
 
 # Runs every hour at :30, offset from ingestion at :00.
-# Two parallel shards: shard 0 = articles 0-499, shard 1 = articles 500-999.
-# 1,000 articles enriched per trigger × 24 triggers = ~24,000 articles/day.
+# Two parallel shards: shard 0 = articles 0-999, shard 1 = articles 1000-1999.
+# 2,000 articles enriched per trigger × 24 triggers = ~48,000 articles/day.
+# (Raised from 500/shard → 1000/shard after Supabase Pro upgrade.)
 on:
   schedule:
     - cron: "30 * * * *"
   workflow_dispatch:
     inputs:
       batch_size:
-        description: "Articles per shard (default: 500)"
+        description: "Articles per shard (default: 1000)"
         required: false
-        default: "500"
+        default: "1000"
       force:
         description: "Re-enrich already-enriched articles? (true/false)"
         required: false
@@ -21,8 +22,7 @@ jobs:
   enrich:
     name: "Enrich shard ${{ matrix.shard }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -30,45 +30,32 @@ jobs:
           - shard: 0
             offset: 0
           - shard: 1
-            offset: 500
-
+            offset: 1000
     env:
       SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-      ENRICH_BATCH_SIZE:    ${{ github.event.inputs.batch_size || '500' }}
+      ENRICH_BATCH_SIZE:    ${{ github.event.inputs.batch_size || '1000' }}
       ENRICH_OFFSET:        ${{ matrix.offset }}
       HF_HOME:              /home/runner/.cache/huggingface
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: "pip"
-
       - name: Cache HuggingFace models
         uses: actions/cache@v4
         with:
           path: /home/runner/.cache/huggingface
           key: hf-models-deberta-labse-sentiment-v2
           restore-keys: hf-models-deberta-labse-
-
       - name: Install PyTorch (CPU-only)
         run: pip install torch --index-url https://download.pytorch.org/whl/cpu
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
+      - run: pip install -r requirements.txt
       - name: Download spaCy models
         run: |
-          python -m spacy download en_core_web_sm
+          python -m spacy download en_core_web_md
           python -m spacy download xx_ent_wiki_sm
-
-      # Pre-download HuggingFace models into cache.
-      # On cache hit this is instant. On first run downloads ~1.3 GB once.
       - name: Pre-download ML models
         run: |
           python -c "
@@ -82,7 +69,6 @@ jobs:
           pipeline('text-classification', model='lxyuan/distilbert-base-multilingual-cased-sentiments-student', device=-1)
           print('All models ready.')
           "
-
       - name: Run enrichment pipeline
         run: |
           FORCE_FLAG=""

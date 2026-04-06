@@ -124,8 +124,9 @@ CADENCE_POLL_INTERVALS: dict[str, int] = {
 
 # How many feeds to poll at the same time
 # (asyncio semaphore — don't set above 30 or remote servers start blocking you)
-MAX_CONCURRENT_FEEDS    = int(os.getenv("MAX_CONCURRENT_FEEDS", "3"))
-MAX_CONCURRENT_ARTICLES = int(os.getenv("MAX_CONCURRENT_ARTICLES", "2"))
+# Raised from 3/2 → 15/5 after Supabase Pro upgrade (larger connection pool).
+MAX_CONCURRENT_FEEDS    = int(os.getenv("MAX_CONCURRENT_FEEDS", "15"))
+MAX_CONCURRENT_ARTICLES = int(os.getenv("MAX_CONCURRENT_ARTICLES", "5"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -167,8 +168,9 @@ SIMHASH_DISTANCE_THRESHOLD = 3    # bit distance ≤ 3 = near-duplicate title
 # ARTICLE TABLE SIZE CAP
 # After each pipeline run, oldest articles are pruned to keep the table lean.
 # ─────────────────────────────────────────────────────────────────────────────
-ARTICLE_HARD_LIMIT    = int(os.getenv("ARTICLE_HARD_LIMIT",  "500000"))
-ARTICLE_PRUNE_TARGET  = int(os.getenv("ARTICLE_PRUNE_TARGET", "490000"))
+# Raised from 500K/490K → 2M/1.9M after Supabase Pro upgrade (8 GB+ storage).
+ARTICLE_HARD_LIMIT    = int(os.getenv("ARTICLE_HARD_LIMIT",  "2000000"))
+ARTICLE_PRUNE_TARGET  = int(os.getenv("ARTICLE_PRUNE_TARGET", "1900000"))
 # Prune down to 490K so the trigger doesn't fire on every single run.
 
 

@@ -49,7 +49,8 @@ TABLE_CLUSTERS  = "article_clusters"
 #   Typical Indian news snippet / wire brief = 30–60 words.
 #   Articles with < 50 words carry almost no enrichment signal.
 # ─────────────────────────────────────────────────────────────────────────────
-ENRICH_BATCH_SIZE    = int(os.getenv("ENRICH_BATCH_SIZE",    "500"))
+# Raised from 500 → 1000 after Supabase Pro upgrade.
+ENRICH_BATCH_SIZE    = int(os.getenv("ENRICH_BATCH_SIZE",    "1000"))
 ENRICH_MIN_WORD_COUNT = int(os.getenv("ENRICH_MIN_WORD_COUNT", "50"))
 
 # Languages to fully enrich (NER, clustering, sentiment, keywords, classification).
@@ -133,7 +134,9 @@ CLUSTER_EMBEDDING_THRESHOLD = float(os.getenv("CLUSTER_EMBEDDING_THRESHOLD", "0.
 # ─────────────────────────────────────────────────────────────────────────────
 # NER (spaCy) — kept for entity extraction (tagging, display, app layer)
 # ─────────────────────────────────────────────────────────────────────────────
-SPACY_MODEL              = os.getenv("SPACY_MODEL",             "en_core_web_sm")
+# Upgraded from en_core_web_sm (12 MB) → en_core_web_md (43 MB) after Supabase Pro upgrade.
+# Requires: python -m spacy download en_core_web_md
+SPACY_MODEL              = os.getenv("SPACY_MODEL",             "en_core_web_md")
 SPACY_MULTILINGUAL_MODEL = os.getenv("SPACY_MULTILINGUAL_MODEL", "xx_ent_wiki_sm")
 NER_MIN_SALIENCE         = 0.1
 #
@@ -480,7 +483,9 @@ IMAGE_HASH_SIZE        = 8                  # produces 64-bit pHash
 #   the HNSW index keeps queries fast regardless of cluster count.
 #   48h is a sensible default that covers most Indian news lifecycles.
 # ─────────────────────────────────────────────────────────────────────────────
-CLUSTER_WINDOW_HOURS        = int(os.getenv("CLUSTER_WINDOW_HOURS", "48"))
+# Raised from 48h → 0 (no window) after Supabase Pro upgrade.
+# 0 = search ALL clusters — pgvector HNSW keeps queries fast regardless of cluster count.
+CLUSTER_WINDOW_HOURS        = int(os.getenv("CLUSTER_WINDOW_HOURS", "0"))
 # Singleton clusters older than this are deleted by cleanup_clusters.py
 CLUSTER_SINGLETON_TTL_HOURS = int(os.getenv("CLUSTER_SINGLETON_TTL_HOURS", "72"))
 
