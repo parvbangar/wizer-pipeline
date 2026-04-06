@@ -50,8 +50,14 @@ TABLE_CLUSTERS  = "article_clusters"
 #   Articles with < 50 words carry almost no enrichment signal.
 # ─────────────────────────────────────────────────────────────────────────────
 # Raised from 500 → 1000 after Supabase Pro upgrade.
-ENRICH_BATCH_SIZE    = int(os.getenv("ENRICH_BATCH_SIZE",    "1000"))
+ENRICH_BATCH_SIZE     = int(os.getenv("ENRICH_BATCH_SIZE",     "1000"))
 ENRICH_MIN_WORD_COUNT = int(os.getenv("ENRICH_MIN_WORD_COUNT", "50"))
+
+# Only enrich articles published within this many hours.
+# Articles older than this are stale — enriching them wastes compute and
+# they will never surface in a freshness-ranked news feed.
+# Set to 0 to disable the gate (enrich everything regardless of age).
+ENRICH_MAX_AGE_HOURS  = int(os.getenv("ENRICH_MAX_AGE_HOURS",  "48"))
 
 # Languages to fully enrich (NER, clustering, sentiment, keywords, classification).
 # Articles in other languages get text_stats + language_detected only, then marked done.
@@ -108,7 +114,10 @@ LANG_DETECT_MIN_CHARS = 20
 #   Below this → return 'general'. Prevents low-confidence mislabelling.
 # ─────────────────────────────────────────────────────────────────────────────
 DEBERTA_MODEL               = os.getenv("DEBERTA_MODEL", "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli")
-CLASSIFY_CONFIDENCE_THRESHOLD = float(os.getenv("CLASSIFY_CONFIDENCE_THRESHOLD", "0.15"))
+# Raised from 0.15 → 0.35. With 12 NLI candidate labels, random baseline
+# per label ≈ 0.083. 0.15 was barely above chance, causing mass misclassification
+# into "world" (confirmed: 37% of articles classified as "world" in production).
+CLASSIFY_CONFIDENCE_THRESHOLD = float(os.getenv("CLASSIFY_CONFIDENCE_THRESHOLD", "0.35"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

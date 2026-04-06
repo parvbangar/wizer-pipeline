@@ -869,6 +869,11 @@ def crawl_article(
     )
     article.author       = _extract_author(rss_entry, og, jsonld) or rss_author
     article.published_at = _extract_publish_date(rss_entry, og, jsonld)
+    # Cap future-dated articles. Some feeds (e.g. ESPN India) set published_at
+    # to a scheduled future time, which pushes them to the top of ORDER BY
+    # published_at DESC queries and displaces genuinely fresh content.
+    if article.published_at and article.published_at > article.crawled_at:
+        article.published_at = article.crawled_at
     article.full_text    = full_text
     article.is_crawled   = bool(full_text)
     article.crawl_strategy = strategy

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from supabase import create_client, Client, ClientOptions
 
@@ -26,6 +26,7 @@ from enrichment.config import (
     SUPABASE_URL, SUPABASE_KEY,
     TABLE_ARTICLES, TABLE_ENTITIES, TABLE_CLUSTERS,
     CLUSTER_WINDOW_HOURS, CLUSTER_EMBEDDING_THRESHOLD,
+    ENRICH_MAX_AGE_HOURS,
 )
 
 log = logging.getLogger(__name__)
@@ -120,6 +121,10 @@ def fetch_unenriched_batch(limit: int, offset: int = 0) -> list[dict]:
                                      have no body text, making NER/keywords/sentiment
                                      useless. Skip them entirely.
       - has some content          → at least a title (skip empty shells)
+      - published_at > NOW()-48h  → only enrich fresh articles; stale articles
+                                     will never surface in a freshness-ranked feed
+                                     and waste compute. Gate disabled if
+                                     ENRICH_MAX_AGE_HOURS=0.
       - ORDER BY published_at DESC → process newest articles first so the app
                                      layer gets enriched data for fresh articles
                                      before stale ones.
@@ -127,13 +132,19 @@ def fetch_unenriched_batch(limit: int, offset: int = 0) -> list[dict]:
     Returns a list of article dicts with all columns needed by the enrichment steps.
     Returns an empty list if something goes wrong (pipeline continues).
     """
+    age_cutoff: str | None = None
+    if ENRICH_MAX_AGE_HOURS > 0:
+        age_cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=ENRICH_MAX_AGE_HOURS)
+        ).isoformat()
+
     results: list[dict] = []
     fetched = 0
     while fetched < limit:
         page_size = min(_PAGE_SIZE, limit - fetched)
         page_offset = offset + fetched
         try:
-            resp = (
+            query = (
                 get_client()
                 .table(TABLE_ARTICLES)
                 .select(
@@ -144,6 +155,11 @@ def fetch_unenriched_batch(limit: int, offset: int = 0) -> list[dict]:
                 .is_("enriched_at", "null")
                 .eq("is_crawled", True)
                 .not_.is_("title", "null")
+            )
+            if age_cutoff:
+                query = query.gt("published_at", age_cutoff)
+            resp = (
+                query
                 .order("published_at", desc=True)
                 .range(page_offset, page_offset + page_size - 1)
                 .execute()

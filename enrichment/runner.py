@@ -119,7 +119,10 @@ def enrich_one(
     except Exception as e:
         log.warning("[%s] language detection failed: %s", article_id[:8], e)
 
-    lang_base = (language_detected or "").split("-")[0].lower()
+    # If language detection failed (None), default to "en" so NLP steps still run.
+    # Silently blocking all enrichment on detection failure was causing 1,165 articles
+    # to get enriched_at set but no category, sentiment, NER, or keywords.
+    lang_base = (language_detected or "en").split("-")[0].lower()
     rich_enrich = not ENRICH_SUPPORTED_LANGUAGES or lang_base in ENRICH_SUPPORTED_LANGUAGES
 
     # ── Step 3: Sentiment (English + Hindi only) ──────────────────────────────
