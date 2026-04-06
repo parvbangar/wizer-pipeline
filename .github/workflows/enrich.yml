@@ -15,11 +15,11 @@ on:
   workflow_run:
     workflows:
       - "Ingest — breaking_news (every 1 hour)"
-      - "Ingest — multiple_daily"
-      - "Ingest — daily"
-      - "Ingest — weekly"
-      - "Ingest — several_weekly"
-      - "Ingest — monthly"
+      - "Ingest — multiple_daily (every 3 hours)"
+      - "Ingest — daily + unknown (every 12 hours)"
+      - "Ingest — weekly (every 24 hours)"
+      - "Ingest — several_weekly (every 24 hours)"
+      - "Ingest — monthly (every 24 hours)"
     types: [completed]
   schedule:
     - cron: "30 * * * *"
