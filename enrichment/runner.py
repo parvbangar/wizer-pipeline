@@ -37,11 +37,6 @@ STEP EXECUTION ORDER:
   5. keywords     — independent, no deps
   6. classifier   — independent, no deps
   7. images       — independent, no deps
-  8. clustering   — depends on ner (needs entities) + title_simhash from article
-
-CLUSTERING NOTE:
-  Uses pgvector HNSW — one SQL nearest-neighbour query per article.
-  No in-memory cluster list. Sub-millisecond regardless of cluster count.
 """
 
 from __future__ import annotations
@@ -59,8 +54,6 @@ from enrichment.steps.ner         import extract_entities
 from enrichment.steps.keywords    import extract_keywords
 from enrichment.steps.classifier  import classify_article
 from enrichment.steps.images      import download_and_hash_image
-from enrichment.steps.clustering  import find_or_create_cluster
-from enrichment.steps.propensity  import compute_propensity
 
 log = logging.getLogger(__name__)
 
@@ -71,7 +64,7 @@ log = logging.getLogger(__name__)
 
 def enrich_one(
     article: dict,
-) -> tuple[dict, list[dict], dict | None, str]:
+) -> tuple[dict, list[dict]]:
     """
     Run all enrichment steps on a single article.
 
@@ -79,12 +72,10 @@ def enrich_one(
       article: Article dict from the DB
 
     Returns:
-      (article_update, entities, cluster_payload, cluster_action)
+      (article_update, entities)
 
       article_update:  dict of columns to write to articles table
       entities:        list of entity dicts for article_entities table
-      cluster_payload: dict for create_cluster / update_cluster (or None)
-      cluster_action:  'join' | 'create' | 'skip'
     """
     article_id  = article.get("id", "")
     title       = article.get("title") or ""
@@ -109,7 +100,7 @@ def enrich_one(
     word_count = update.get("word_count") or 0
     if word_count < ENRICH_MIN_WORD_COUNT:
         log.debug("[%s] Skipping enrichment — too short (%d words)", article_id, word_count)
-        return update, [], None, "skip"
+        return update, []
 
     # ── Step 2: Language detection ────────────────────────────────────────────
     language_detected = None
@@ -164,35 +155,7 @@ def enrich_one(
     except Exception as e:
         log.warning("[%s] image hashing failed: %s", article_id[:8], e)
 
-    # ── Step 8: Story clustering (ALL languages — every article contributes) ──
-    # Uses pgvector HNSW: one SQL query per article, no in-memory cluster list.
-    cluster_id      = None
-    cluster_payload = None
-    cluster_action  = "skip"
-    try:
-        cluster_id, cluster_payload, cluster_action = find_or_create_cluster(
-            article  = article,
-            entities = entities,
-        )
-        if cluster_id:
-            update["cluster_id"] = cluster_id
-    except Exception as e:
-        log.warning("[%s] clustering failed: %s", article_id[:8], e)
-
-    # ── Step 9: Propensity scoring ────────────────────────────────────────────
-    try:
-        propensity_score = compute_propensity(
-            article         = article,
-            update          = update,
-            entities        = entities,
-            cluster_payload = cluster_payload,
-            cluster_action  = cluster_action,
-        )
-        update["propensity_score"] = propensity_score
-    except Exception as e:
-        log.warning("[%s] propensity scoring failed: %s", article_id[:8], e)
-
-    return update, entities, cluster_payload, cluster_action
+    return update, entities
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -221,12 +184,9 @@ def run_enrichment(
     t_start = time.perf_counter()
 
     summary = {
-        "processed":   0,
-        "failed":      0,
-        "clustered":   0,
-        "new_clusters": 0,
-        "skipped_cluster": 0,
-        "duration_s":  0.0,
+        "processed":  0,
+        "failed":     0,
+        "duration_s": 0.0,
     }
 
     # ── Fetch articles ────────────────────────────────────────────────────────
@@ -249,7 +209,7 @@ def run_enrichment(
         log.debug("[%d/%d] Enriching: %s…", i, len(articles), title)
 
         try:
-            article_update, entities, cluster_payload, cluster_action = enrich_one(article)
+            article_update, entities = enrich_one(article)
         except Exception as e:
             log.error("[%s] enrich_one crashed: %s", article_id, e)
             summary["failed"] += 1
@@ -260,32 +220,15 @@ def run_enrichment(
 
         if dry_run:
             log.info(
-                "DRY RUN [%s] category=%s lang=%s words=%s entities=%d action=%s",
+                "DRY RUN [%s] category=%s lang=%s words=%s entities=%d",
                 article_id,
                 article_update.get("category"),
                 article_update.get("language_detected"),
                 article_update.get("word_count"),
                 len(entities),
-                cluster_action,
             )
             summary["processed"] += 1
             continue
-
-        # ── Persist cluster ───────────────────────────────────────────────────
-        if cluster_action == "create" and cluster_payload:
-            new_cluster_id = db.create_cluster(cluster_payload)
-            if new_cluster_id:
-                article_update["cluster_id"] = new_cluster_id
-                summary["new_clusters"] += 1
-
-        elif cluster_action == "join" and cluster_payload:
-            cluster_id = article_update.get("cluster_id")
-            if cluster_id:
-                db.update_cluster(cluster_id, cluster_payload)
-                summary["clustered"] += 1
-
-        else:
-            summary["skipped_cluster"] += 1
 
         # ── Persist entities ──────────────────────────────────────────────────
         if entities:
@@ -303,10 +246,8 @@ def run_enrichment(
     summary["duration_s"] = duration
 
     log.info(
-        "═══ Enrichment complete | processed=%d | failed=%d | "
-        "clustered=%d | new_clusters=%d | %.1fs ═══",
+        "═══ Enrichment complete | processed=%d | failed=%d | %.1fs ═══",
         summary["processed"], summary["failed"],
-        summary["clustered"], summary["new_clusters"],
         duration,
     )
     return summary

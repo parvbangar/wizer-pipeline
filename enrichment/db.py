@@ -24,8 +24,7 @@ from supabase import create_client, Client, ClientOptions
 
 from enrichment.config import (
     SUPABASE_URL, SUPABASE_KEY,
-    TABLE_ARTICLES, TABLE_ENTITIES, TABLE_CLUSTERS,
-    CLUSTER_WINDOW_HOURS, CLUSTER_EMBEDDING_THRESHOLD,
+    TABLE_ARTICLES, TABLE_ENTITIES,
     ENRICH_MAX_AGE_HOURS,
 )
 
@@ -212,50 +211,6 @@ def fetch_unenriched_batch_forced(limit: int, offset: int = 0) -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# READING: NEAREST CLUSTER SEARCH (pgvector HNSW)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def find_nearest_cluster(
-    embedding: list[float],
-    threshold: float | None = None,
-    window_hours: int | None = None,
-) -> dict | None:
-    """
-    Find the closest cluster to an article embedding using pgvector HNSW.
-
-    Calls the find_nearest_cluster() SQL function (docs/pgvector_migration.sql).
-    One DB round-trip per article, sub-millisecond query regardless of cluster count.
-
-    Args:
-      embedding:    768-dim LaBSE embedding for the article (normalised floats)
-      threshold:    Min cosine similarity to qualify (default: CLUSTER_EMBEDDING_THRESHOLD)
-      window_hours: Only search clusters seen in last N hours (default: CLUSTER_WINDOW_HOURS)
-                    Pass 0 to search all clusters with no time limit.
-
-    Returns the best-matching cluster dict (with 'similarity' key), or None.
-    """
-    if threshold is None:
-        threshold = CLUSTER_EMBEDDING_THRESHOLD
-    if window_hours is None:
-        window_hours = CLUSTER_WINDOW_HOURS
-
-    # Format as pgvector literal: '[x,y,z,...]'
-    vec_str = "[" + ",".join(f"{v:.6f}" for v in embedding) + "]"
-
-    try:
-        resp = _run_with_retry(lambda: get_client().rpc("find_nearest_cluster", {
-            "query_embedding":      vec_str,
-            "similarity_threshold": threshold,
-            "window_hours":         window_hours,
-        }).execute())
-        rows = resp.data or []
-        return rows[0] if rows else None
-    except Exception as e:
-        log.warning("find_nearest_cluster RPC failed: %s — article will start new cluster", e)
-        return None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # WRITING: SAVE ENRICHMENT RESULTS
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -329,63 +284,3 @@ def save_entities(article_id: str, entities: list[dict]) -> bool:
         return False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# WRITING: CLUSTER OPERATIONS
-# ─────────────────────────────────────────────────────────────────────────────
-
-def create_cluster(cluster_data: dict) -> str | None:
-    """
-    Insert a new cluster row and return its uuid.
-
-    Writes both canonical_embedding (jsonb, for backward compat) and
-    embedding_vec (vector, for pgvector HNSW search). If cluster_data
-    contains a 'canonical_embedding' list, embedding_vec is derived from it.
-
-    Returns the new cluster uuid, or None on failure.
-    """
-    # Populate embedding_vec from canonical_embedding if present
-    raw_embedding = cluster_data.get("canonical_embedding")
-    if raw_embedding and isinstance(raw_embedding, list):
-        cluster_data["embedding_vec"] = (
-            "[" + ",".join(f"{v:.6f}" for v in raw_embedding) + "]"
-        )
-
-    try:
-        resp = _run_with_retry(
-            lambda: get_client().table(TABLE_CLUSTERS).insert(cluster_data).execute()
-        )
-        rows = resp.data or []
-        if rows:
-            return rows[0].get("id")
-        return None
-    except Exception as e:
-        log.error("create_cluster failed: %s", e)
-        return None
-
-
-def update_cluster(cluster_id: str, update: dict) -> bool:
-    """
-    Update an existing cluster with new stats (outlet_count, article_count,
-    entity_set, outlet_set, top_entities, canonical_embedding, etc.).
-
-    When canonical_embedding is included (running mean update), also formats
-    embedding_vec as a pgvector literal so the HNSW index stays current.
-
-    Called when an article joins an existing cluster.
-    Returns True on success, False on failure.
-    """
-    update["updated_at"] = datetime.now(timezone.utc).isoformat()
-    # Keep embedding_vec in sync with canonical_embedding
-    raw_embedding = update.get("canonical_embedding")
-    if raw_embedding and isinstance(raw_embedding, list):
-        update["embedding_vec"] = (
-            "[" + ",".join(f"{v:.6f}" for v in raw_embedding) + "]"
-        )
-    try:
-        _run_with_retry(
-            lambda: get_client().table(TABLE_CLUSTERS).update(update).eq("id", cluster_id).execute()
-        )
-        return True
-    except Exception as e:
-        log.error("update_cluster failed for %s: %s", cluster_id, e)
-        return False

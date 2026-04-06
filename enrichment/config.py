@@ -7,7 +7,7 @@ Same pattern as pipeline/config.py — every setting lives here.
 No other file in the enrichment package hardcodes values.
 
 HOW TO USE:
-    from enrichment.config import ENRICH_BATCH_SIZE, CLUSTER_WINDOW_HOURS
+    from enrichment.config import ENRICH_BATCH_SIZE, ENRICH_MAX_AGE_HOURS
 """
 
 import os
@@ -29,7 +29,6 @@ SUPABASE_KEY: str = os.getenv("SUPABASE_SERVICE_KEY", "")
 # ─────────────────────────────────────────────────────────────────────────────
 TABLE_ARTICLES  = "articles"
 TABLE_ENTITIES  = "article_entities"
-TABLE_CLUSTERS  = "article_clusters"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -45,7 +44,7 @@ TABLE_CLUSTERS  = "article_clusters"
 #
 # ENRICH_MIN_WORD_COUNT:
 #   Articles below this word count are marked enriched_at but skipped for all
-#   expensive steps (NER, keywords, clustering, image download).
+#   expensive steps (NER, keywords, image download).
 #   Typical Indian news snippet / wire brief = 30–60 words.
 #   Articles with < 50 words carry almost no enrichment signal.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -59,7 +58,7 @@ ENRICH_MIN_WORD_COUNT = int(os.getenv("ENRICH_MIN_WORD_COUNT", "50"))
 # Set to 0 to disable the gate (enrich everything regardless of age).
 ENRICH_MAX_AGE_HOURS  = int(os.getenv("ENRICH_MAX_AGE_HOURS",  "48"))
 
-# Languages to fully enrich (NER, clustering, sentiment, keywords, classification).
+# Languages to fully enrich (NER, sentiment, keywords, classification).
 # Articles in other languages get text_stats + language_detected only, then marked done.
 # Set to empty set to enrich all languages.
 # "en" covers en, en-in, en-us etc — the gate checks startswith in runner.
@@ -118,26 +117,6 @@ DEBERTA_MODEL               = os.getenv("DEBERTA_MODEL", "MoritzLaurer/mDeBERTa-
 # per label ≈ 0.083. 0.15 was barely above chance, causing mass misclassification
 # into "world" (confirmed: 37% of articles classified as "world" in production).
 CLASSIFY_CONFIDENCE_THRESHOLD = float(os.getenv("CLASSIFY_CONFIDENCE_THRESHOLD", "0.35"))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# STORY CLUSTERING — LaBSE sentence embeddings
-#
-# Model: sentence-transformers/LaBSE (Language-Agnostic BERT Sentence Embeddings)
-#   - Google's model trained on 109 languages
-#   - Explicitly supports ALL major Indian languages
-#   - Produces 768-dim normalised embeddings
-#   - Two articles about the same event in Hindi and English will have
-#     cosine similarity > 0.85 even with zero word overlap
-#   - ~471 MB download, cached after first run
-#
-# CLUSTER_EMBEDDING_THRESHOLD:
-#   Cosine similarity above which two articles are considered the same story.
-#   LaBSE scores are higher than traditional methods — 0.82 is well calibrated
-#   for Indian news wire syndication (same PTI story, different outlets).
-# ─────────────────────────────────────────────────────────────────────────────
-LABSE_MODEL                 = os.getenv("LABSE_MODEL", "sentence-transformers/LaBSE")
-CLUSTER_EMBEDDING_THRESHOLD = float(os.getenv("CLUSTER_EMBEDDING_THRESHOLD", "0.82"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -473,33 +452,6 @@ IMAGE_HASH_SIZE        = 8                  # produces 64-bit pHash
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP: STORY CLUSTERING
-#
-# Two articles belong to the same cluster if they're about the same event.
-# We detect this using two signals:
-#
-#   1. Entity overlap  — share ≥ CLUSTER_MIN_SHARED_ENTITIES named entities
-#   2. Title similarity — title SimHash distance ≤ CLUSTER_SIMHASH_THRESHOLD
-#
-# CLUSTER_SCORE_THRESHOLD:
-#   Combined score (entity Jaccard + title similarity) needed to join a cluster.
-#   0.35 is calibrated for Indian news wire syndication patterns.
-#   Raise to 0.5 if you're getting too many false clusters.
-#
-# CLUSTER_WINDOW_HOURS:
-#   Search window for the pgvector HNSW nearest-neighbour query.
-#   Pass 0 to search ALL clusters (no window) — safe with pgvector since
-#   the HNSW index keeps queries fast regardless of cluster count.
-#   48h is a sensible default that covers most Indian news lifecycles.
-# ─────────────────────────────────────────────────────────────────────────────
-# Raised from 48h → 0 (no window) after Supabase Pro upgrade.
-# 0 = search ALL clusters — pgvector HNSW keeps queries fast regardless of cluster count.
-CLUSTER_WINDOW_HOURS        = int(os.getenv("CLUSTER_WINDOW_HOURS", "0"))
-# Singleton clusters older than this are deleted by cleanup_clusters.py
-CLUSTER_SINGLETON_TTL_HOURS = int(os.getenv("CLUSTER_SINGLETON_TTL_HOURS", "72"))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # STEP: SENTIMENT ANALYSIS (multilingual transformer)
 #
 # Model: lxyuan/distilbert-base-multilingual-cased-sentiments-student
@@ -519,38 +471,3 @@ SENTIMENT_POSITIVE_THRESHOLD =  0.05
 SENTIMENT_NEGATIVE_THRESHOLD = -0.05
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# STEP: PROPENSITY SCORING
-#
-# Estimates how likely an article is to go viral / drive user engagement.
-#
-# Phase 1 (immediate): weighted formula using outlet_count, category, entities
-# Phase 2 (weekly):    LightGBM model trained on outlet_count as self-supervised
-#                      label. Model file replaces the formula when present.
-#
-# Self-supervised training signal:
-#   outlet_count on article_clusters = how many outlets reported the same story
-#   High outlet_count → genuinely important news (wire syndication pattern)
-#   Low outlet_count → niche or unique story
-#
-# PROPENSITY_MODEL_PATH: path to trained LightGBM .lgb model file
-# PROPENSITY_MAX_OUTLET_COUNT: log-normalization cap for outlet virality signal
-# ─────────────────────────────────────────────────────────────────────────────
-PROPENSITY_MODEL_PATH       = os.getenv("PROPENSITY_MODEL_PATH", "models/propensity_model.lgb")
-PROPENSITY_MAX_OUTLET_COUNT = 50   # log(1+50) ≈ 3.93 — normalization denominator
-
-PROPENSITY_CATEGORY_WEIGHTS: dict[str, float] = {
-    "cricket":       0.90,
-    "politics":      0.85,
-    "business":      0.75,
-    "entertainment": 0.70,
-    "technology":    0.70,
-    "sports":        0.70,
-    "health":        0.65,
-    "world":         0.65,
-    "crime":         0.60,
-    "education":     0.55,
-    "environment":   0.55,
-    "crypto":        0.50,
-    "general":       0.30,
-}
