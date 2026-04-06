@@ -1,10 +1,26 @@
 name: Layer 2 — Metadata Enrichment
 
-# Runs every hour at :30, offset from ingestion at :00.
+# PRIMARY TRIGGER: workflow_run
+#   Fires within ~1 minute of any ingestion job completing.
+#   This is the "hand in hand" mechanism — newly ingested articles are
+#   enriched almost immediately rather than waiting up to 30-90 minutes.
+#
+# FALLBACK TRIGGER: hourly schedule
+#   Catches any articles that slipped through (e.g. the ingestion job
+#   finished while enrichment was already running, or network blips).
+#
 # Two parallel shards: shard 0 = articles 0-999, shard 1 = articles 1000-1999.
-# 2,000 articles enriched per trigger × 24 triggers = ~48,000 articles/day.
-# (Raised from 500/shard → 1000/shard after Supabase Pro upgrade.)
+# 2,000 articles enriched per trigger × triggers-per-day = max throughput.
 on:
+  workflow_run:
+    workflows:
+      - "Ingest — breaking_news (every 1 hour)"
+      - "Ingest — multiple_daily"
+      - "Ingest — daily"
+      - "Ingest — weekly"
+      - "Ingest — several_weekly"
+      - "Ingest — monthly"
+    types: [completed]
   schedule:
     - cron: "30 * * * *"
   workflow_dispatch:
@@ -47,8 +63,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /home/runner/.cache/huggingface
-          key: hf-models-deberta-labse-sentiment-v2
-          restore-keys: hf-models-deberta-labse-
+          # Cache key updated: removed LaBSE (clustering deleted), added summarizer tag
+          key: hf-models-deberta-sentiment-v3
+          restore-keys: hf-models-deberta-sentiment-
       - name: Install PyTorch (CPU-only)
         run: pip install torch --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -r requirements.txt
@@ -60,11 +77,8 @@ jobs:
         run: |
           python -c "
           from transformers import pipeline
-          from sentence_transformers import SentenceTransformer
           print('Downloading mDeBERTa (~560 MB)...')
           pipeline('zero-shot-classification', model='MoritzLaurer/mDeBERTa-v3-base-mnli-xnli', device=-1)
-          print('Downloading LaBSE (~471 MB)...')
-          SentenceTransformer('sentence-transformers/LaBSE')
           print('Downloading multilingual sentiment (~268 MB)...')
           pipeline('text-classification', model='lxyuan/distilbert-base-multilingual-cased-sentiments-student', device=-1)
           print('All models ready.')
