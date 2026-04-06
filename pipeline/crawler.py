@@ -608,12 +608,19 @@ def _extract_rss_fulltext(entry: dict) -> str:
     This is the cheapest possible extraction — no HTTP request needed.
     We prefer this over crawling when available and long enough (>500 chars).
     """
+    import html as html_module
+
+    def _strip_and_decode(raw: str) -> str:
+        """Strip HTML tags then decode HTML entities (&#8216; → ', &amp; → &)."""
+        stripped = re.sub(r"<[^>]+>", " ", raw)
+        decoded  = html_module.unescape(stripped)
+        return re.sub(r"\s+", " ", decoded).strip()
+
     # content:encoded — the most common full-text RSS field
     for item in entry.get("content", []):
         raw = item.get("value", "")
         if raw:
-            clean = re.sub(r"<[^>]+>", " ", raw)
-            clean = re.sub(r"\s+", " ", clean).strip()
+            clean = _strip_and_decode(raw)
             if len(clean) >= 500:
                 return clean[:MAX_ARTICLE_BODY_CHARS]
 
@@ -621,8 +628,7 @@ def _extract_rss_fulltext(entry: dict) -> str:
     summary_detail = entry.get("summary_detail", {})
     raw = summary_detail.get("value", "") if isinstance(summary_detail, dict) else ""
     if raw and summary_detail.get("type") == "text/html":
-        clean = re.sub(r"<[^>]+>", " ", raw)
-        clean = re.sub(r"\s+", " ", clean).strip()
+        clean = _strip_and_decode(raw)
         if len(clean) >= 500:
             return clean[:MAX_ARTICLE_BODY_CHARS]
 
@@ -797,6 +803,18 @@ def _clean_boilerplate(text: str) -> str:
 
     # Collapse runs of blank lines to at most one
     result = re.sub(r"\n{3,}", "\n\n", "\n".join(clean)).strip()
+
+    # ── Inline DOM artifact removal ───────────────────────────────────────────
+    # Some sites leak CSS class names / JS variable names as inline text nodes
+    # that extractors pick up verbatim.  Strip them here.
+    #
+    # text_fields — Madhyamam.com: their article body div has class="text_fields"
+    #   and trafilatura includes the class name inline before the article text.
+    #   Affects 100% of Madhyamam articles (539+ articles = largest single source).
+    result = re.sub(r"\btext_fields\b", "", result)
+
+    # Collapse any double-spaces left behind by the substitutions above
+    result = re.sub(r"  +", " ", result).strip()
     return result
 
 
