@@ -25,7 +25,11 @@ from __future__ import annotations
 
 import logging
 
-from enrichment.config import SENTIMENT_MULTILINGUAL_MODEL
+from enrichment.config import (
+    SENTIMENT_MULTILINGUAL_MODEL,
+    SENTIMENT_POSITIVE_THRESHOLD,
+    SENTIMENT_NEGATIVE_THRESHOLD,
+)
 
 log = logging.getLogger(__name__)
 
@@ -95,10 +99,18 @@ def analyse_sentiment(
         if not score_map:
             return null_result
 
-        top_label = max(score_map, key=score_map.get)
-        pos       = score_map.get("positive", 0.0)
-        neg       = score_map.get("negative", 0.0)
-        compound  = round(pos - neg, 4)
+        pos      = score_map.get("positive", 0.0)
+        neg      = score_map.get("negative", 0.0)
+        compound = round(pos - neg, 4)
+
+        # Only commit to positive/negative if the model is sufficiently confident.
+        # Otherwise label as neutral — prevents "wins by 1%" from drowning out neutral.
+        if pos >= SENTIMENT_POSITIVE_THRESHOLD:
+            top_label = "positive"
+        elif neg >= SENTIMENT_NEGATIVE_THRESHOLD:
+            top_label = "negative"
+        else:
+            top_label = "neutral"
 
         # sentiment_stats mirrors the NewsData.io format:
         # {positive: 99.93, neutral: 0.05, negative: 0.02} (percentages)

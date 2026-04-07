@@ -120,8 +120,9 @@ DEBERTA_MODEL               = os.getenv("DEBERTA_MODEL", "MoritzLaurer/mDeBERTa-
 CLASSIFY_CONFIDENCE_THRESHOLD = float(os.getenv("CLASSIFY_CONFIDENCE_THRESHOLD", "0.20"))
 # Minimum per-tag sigmoid score to include a tag in ai_tag.
 # multi_label=True uses sigmoid (not softmax), so scores are independent.
-# 0.25 keeps only tags the model is reasonably confident about.
-CLASSIFY_TAG_THRESHOLD        = float(os.getenv("CLASSIFY_TAG_THRESHOLD",        "0.25"))
+# Raised 0.25 → 0.35: at 0.25 "conflict" and "crime" fired on sports/general
+# articles (66 observed false-positive co-occurrences in production).
+CLASSIFY_TAG_THRESHOLD        = float(os.getenv("CLASSIFY_TAG_THRESHOLD",        "0.35"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -472,7 +473,12 @@ SENTIMENT_MULTILINGUAL_MODEL = os.getenv(
     "SENTIMENT_MULTILINGUAL_MODEL",
     "lxyuan/distilbert-base-multilingual-cased-sentiments-student",
 )
-SENTIMENT_POSITIVE_THRESHOLD =  0.05
-SENTIMENT_NEGATIVE_THRESHOLD = -0.05
+# Class-probability thresholds for the 3-way sentiment classifier.
+# If neither positive nor negative class reaches its threshold, label = "neutral".
+# 0.40 means the model must be at least moderately sure before committing to
+# positive or negative — prevents "max wins by 1%" cases from suppressing neutral.
+# Previously these were compound-score thresholds (±0.05) but were unused.
+SENTIMENT_POSITIVE_THRESHOLD = 0.40
+SENTIMENT_NEGATIVE_THRESHOLD = 0.40
 
 

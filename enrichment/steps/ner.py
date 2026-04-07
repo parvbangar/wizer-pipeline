@@ -105,6 +105,12 @@ def _extract_entities_spacy(title: str, combined: str, body: str, nlp) -> list[d
         entity_text = ent.text.strip()
         if len(entity_text) < 2:
             continue
+        # GPEs that appear all-lowercase in source text are almost always
+        # spaCy misclassifications of common nouns/brands as place names
+        # (e.g. "iphone", "charger", "mustang", "earth" in compound phrases).
+        # Real place names appear Title-cased or ALL-CAPS in English text.
+        if mapped_type == "GPE" and entity_text == entity_text.lower():
+            continue
         key = entity_text.lower()
         mention_counts[key] = mention_counts.get(key, 0) + 1
         if key not in raw_entities:

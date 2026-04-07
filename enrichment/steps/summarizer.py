@@ -24,6 +24,7 @@ OUTPUT:
 
 from __future__ import annotations
 
+import html as html_module
 import re
 
 
@@ -51,8 +52,8 @@ def summarize_article(
     Returns:
       Summary string, or None if no meaningful text is available.
     """
-    desc = (description or "").strip()
-    body = (full_text or "").strip()
+    desc = html_module.unescape((description or "").strip())
+    body = html_module.unescape((full_text or "").strip())
 
     # Prefer a rich description (journalist-written) over body extraction
     if len(desc) >= 150:
