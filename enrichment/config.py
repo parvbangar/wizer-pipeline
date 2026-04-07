@@ -113,10 +113,11 @@ LANG_DETECT_MIN_CHARS = 20
 #   Below this → return 'general'. Prevents low-confidence mislabelling.
 # ─────────────────────────────────────────────────────────────────────────────
 DEBERTA_MODEL               = os.getenv("DEBERTA_MODEL", "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli")
-# Raised from 0.15 → 0.35. With 12 NLI candidate labels, random baseline
-# per label ≈ 0.083. 0.15 was barely above chance, causing mass misclassification
-# into "world" (confirmed: 37% of articles classified as "world" in production).
-CLASSIFY_CONFIDENCE_THRESHOLD = float(os.getenv("CLASSIFY_CONFIDENCE_THRESHOLD", "0.35"))
+# With 12 NLI candidate labels, random baseline per label ≈ 0.083.
+# 0.20 = 2.4× baseline — accepts moderate-confidence correct classifications
+# while still rejecting genuine noise. 0.35 was too aggressive: 85% of articles
+# defaulted to "general" in production because it required 4.2× baseline.
+CLASSIFY_CONFIDENCE_THRESHOLD = float(os.getenv("CLASSIFY_CONFIDENCE_THRESHOLD", "0.20"))
 # Minimum per-tag sigmoid score to include a tag in ai_tag.
 # multi_label=True uses sigmoid (not softmax), so scores are independent.
 # 0.25 keeps only tags the model is reasonably confident about.

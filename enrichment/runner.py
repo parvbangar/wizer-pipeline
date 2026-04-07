@@ -162,23 +162,23 @@ def enrich_one(
         except Exception as e:
             log.warning("[%s] keyword extraction failed: %s", article_id[:8], e)
 
-    # ── Step 6: Category classification (English + Hindi only) ───────────────
-    if rich_enrich:
-        try:
-            category = classify_article(title, description, full_text)
-            update["category"] = category
-        except Exception as e:
-            log.warning("[%s] classifier failed: %s", article_id[:8], e)
+    # ── Step 6: Category classification (all languages — mDeBERTa is multilingual) ──
+    # mDeBERTa handles 100+ languages natively via cross-lingual embeddings.
+    # English labels work for Tamil/Kannada/Telugu/Malayalam input — the model
+    # maps all languages into the same semantic space. No rich_enrich gate needed.
+    try:
+        category = classify_article(title, description, full_text)
+        update["category"] = category
+    except Exception as e:
+        log.warning("[%s] classifier failed: %s", article_id[:8], e)
 
-    # ── Step 7: AI topic tags (English + Hindi only) ─────────────────────────
-    # Reuses the mDeBERTa pipeline already loaded by step 6 — no extra RAM.
-    # multi_label classification against 20 fine-grained topic labels.
-    if rich_enrich:
-        try:
-            tags = classify_tags(title, description, full_text)
-            update["ai_tag"] = tags if tags else None
-        except Exception as e:
-            log.warning("[%s] tag classification failed: %s", article_id[:8], e)
+    # ── Step 7: AI topic tags (all languages — same mDeBERTa pipeline) ───────
+    # Reuses the model already loaded by step 6 — no extra RAM.
+    try:
+        tags = classify_tags(title, description, full_text)
+        update["ai_tag"] = tags if tags else None
+    except Exception as e:
+        log.warning("[%s] tag classification failed: %s", article_id[:8], e)
 
     # ── Step 8: Extractive summary (all languages) ───────────────────────────
     # No model — first 3 sentences of full_text or description if rich.
