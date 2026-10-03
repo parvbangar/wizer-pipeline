@@ -28,6 +28,8 @@ IMPORTANT: This module uses YOUR exact column names from your schema.
 from __future__ import annotations
 
 import logging
+import time
+import threading
 from datetime import datetime, timezone, timedelta
 from typing import Callable, Iterable
 
@@ -52,20 +54,27 @@ from pipeline.config import (
 log = logging.getLogger(__name__)
 
 # The client is created once and reused (singleton pattern)
-_client = None
+_client = None          # kept for backwards compatibility (tests); see _local
+_local = threading.local()
 
 
 def get_client():
     """
-    Return the Supabase client, creating it on first call.
+    Return this THREAD's Supabase client, creating it on first use.
+
+    WHY ONE CLIENT PER THREAD?
+      Feeds and articles are processed by up to ~30 executor threads. With a
+      single shared client they all multiplexed one HTTP connection, and the
+      API gateway answered bursts with "Server disconnected" — on 2026-10-03
+      that turned every insert of the first production run into an error.
+      A client per thread gives each thread its own connection pool.
 
     WHY LAZY INITIALISATION?
       If we created the client at import time, any test that imports db.py
       would immediately try to connect to Supabase — even offline tests.
-      Lazy init means the connection only happens when actually needed.
     """
-    global _client
-    if _client is None:
+    client = getattr(_local, "client", None)
+    if client is None:
         if not SUPABASE_URL or not SUPABASE_KEY:
             raise RuntimeError(
                 "\n\nMissing Supabase credentials!\n"
@@ -76,14 +85,44 @@ def get_client():
             )
         try:
             from supabase import create_client
-            _client = create_client(SUPABASE_URL, SUPABASE_KEY)
-            log.info("Connected to Supabase: %s", SUPABASE_URL)
         except ImportError:
-            raise RuntimeError(
-                "supabase package not installed.\n"
-                "Run: pip install supabase\n"
-            )
-    return _client
+            raise RuntimeError("supabase package not installed. Run: pip install supabase") from None
+        client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        _local.client = client
+        log.debug("Connected to Supabase (thread %s)", threading.current_thread().name)
+    return client
+
+
+def _reset_client() -> None:
+    """Drop this thread's client so the next call reconnects."""
+    _local.client = None
+
+
+def _is_transient(e: Exception) -> bool:
+    """Connection-level failures worth one reconnect + retry."""
+    try:
+        import httpx
+        if isinstance(e, (httpx.RemoteProtocolError, httpx.ReadTimeout, httpx.ConnectTimeout,
+                          httpx.ConnectError, httpx.PoolTimeout, httpx.ReadError, httpx.WriteError)):
+            return True
+    except ImportError:
+        pass
+    msg = str(e).lower()
+    return any(t in msg for t in ("server disconnected", "timed out", "connection reset",
+                                  "connection refused", "broken pipe"))
+
+
+def _retry(operation):
+    """Run a DB call; on a transient connection error reconnect and retry once."""
+    try:
+        return operation()
+    except Exception as e:
+        if not _is_transient(e):
+            raise
+        log.debug("DB connection error (%s) — reconnecting and retrying once", e)
+        _reset_client()
+        time.sleep(0.5)
+        return operation()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -195,16 +234,20 @@ def _select_feed_rows(
 
 def _derive_language_name(feed: dict) -> None:
     """
-    Fill feed["language_name"] (-> articles.language) from language_code.
+    Fill feed["language_name"] (-> articles.language) with the feed's short
+    language code ("en", "hi", "pt-br").
 
-    feeds.language_name isn't guaranteed to exist, so it isn't selected (see
-    config.LANGUAGE_NAMES); previously the crawler read a key that was never
-    present, leaving articles.language empty on every row.
+    PRODUCTION SCHEMA: articles.language is char(5) there (docs/migration.sql
+    says text). Writing names ("English", "Malayalam") made EVERY insert fail
+    with 22001 "value too long" on the first run of 2026-10-03, so the column
+    gets the code, truncated to 5 characters. The full name is derivable from
+    config.LANGUAGE_NAMES whenever it is needed.
     """
     if feed.get("language_name"):
+        feed["language_name"] = str(feed["language_name"])[:5]
         return
-    code = str(feed.get(FEED_COL_LANGUAGE) or "").lower().replace("_", "-").split("-")[0]
-    feed["language_name"] = LANGUAGE_NAMES.get(code, "")
+    code = str(feed.get(FEED_COL_LANGUAGE) or "").lower().replace("_", "-")
+    feed["language_name"] = code[:5]
 
 
 def get_due_feeds(cadence: str | None = None) -> list[dict]:
@@ -329,9 +372,9 @@ def _update_feed_row(feed_id: str, patch: dict) -> None:
     don't exist yet, drop those keys and retry once so the essential state
     (last_polled_at, fail_count, is_active ...) is still saved.
     """
-    client = get_client()
+    # (retried once on transient connection errors — see _retry)
     try:
-        client.table(TABLE_FEEDS).update(patch).eq(FEED_COL_ID, feed_id).execute()
+        _retry(lambda: get_client().table(TABLE_FEEDS).update(patch).eq(FEED_COL_ID, feed_id).execute())
     except Exception as e:
         optional_in_patch = [c for c in FEED_OPTIONAL_COLS if c in patch]
         if optional_in_patch and _is_missing_column_error(e, optional_in_patch):
@@ -340,7 +383,7 @@ def _update_feed_row(feed_id: str, patch: dict) -> None:
                 "docs/ingestion_fixes_migration.sql): %s", optional_in_patch, e,
             )
             reduced = {k: v for k, v in patch.items() if k not in FEED_OPTIONAL_COLS}
-            client.table(TABLE_FEEDS).update(reduced).eq(FEED_COL_ID, feed_id).execute()
+            _retry(lambda: get_client().table(TABLE_FEEDS).update(reduced).eq(FEED_COL_ID, feed_id).execute())
         else:
             raise
 
@@ -580,14 +623,14 @@ def url_hash_exists(url_hash: int | Iterable[int]) -> bool:
     if not hashes:
         return False
     try:
-        resp = (
+        resp = _retry(lambda: (
             get_client()
             .table(TABLE_ARTICLES)
             .select(ART_COL_URL_HASH, count="exact")
             .in_(ART_COL_URL_HASH, hashes)
             .limit(1)
             .execute()
-        )
+        ))
         return (resp.count or 0) > 0
     except Exception as e:
         log.warning("url_hash_exists check failed: %s - failing open", e)
@@ -621,16 +664,15 @@ def upsert_articles(rows: list[dict]) -> tuple[int, int]:
     if not rows:
         return 0, 0
 
-    client = get_client()
     inserted = 0
     duplicates = 0
 
     try:
-        resp = (
-            client.table(TABLE_ARTICLES)
+        resp = _retry(lambda: (
+            get_client().table(TABLE_ARTICLES)
             .upsert(rows, on_conflict=ART_COL_URL_HASH, ignore_duplicates=True)
             .execute()
-        )
+        ))
         inserted = len(resp.data) if resp.data else 0
         duplicates = len(rows) - inserted
 
@@ -639,11 +681,11 @@ def upsert_articles(rows: list[dict]) -> tuple[int, int]:
         # Fall back to individual inserts so partial batches aren't lost
         for row in rows:
             try:
-                row_resp = client.table(TABLE_ARTICLES).upsert(
+                row_resp = _retry(lambda: get_client().table(TABLE_ARTICLES).upsert(
                     row,
                     on_conflict=ART_COL_URL_HASH,
                     ignore_duplicates=True,
-                ).execute()
+                ).execute())
                 # With ignore_duplicates the response only contains rows that
                 # were actually inserted; a conflict-skipped row comes back
                 # empty.  (Counting every non-raising call as "inserted"

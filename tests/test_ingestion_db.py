@@ -186,9 +186,12 @@ class TestSelectedColumns:
         client = install(handler)
         due = {f["id"]: f for f in db.get_due_feeds()}
         assert "language_name" not in client.queries[0].op("select")[0][1][0]
-        assert due["1"]["language_name"] == "Hindi"
-        assert due["2"]["language_name"] == ""
-        assert due["3"]["language_name"] == "English"
+        # Production's articles.language is char(5): the short code, never a name
+        # (names made every insert fail with 22001 on 2026-10-03).
+        assert due["1"]["language_name"] == "hi"
+        assert due["2"]["language_name"] == "xx-yy"
+        assert due["3"]["language_name"] == "en-in"
+        assert all(len(f["language_name"]) <= 5 for f in due.values())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -530,3 +533,51 @@ class TestPruneArticles:
     def test_failure_reports_partial_progress_without_raising(self, monkeypatch):
         pdb, _ = self._client(monkeypatch, [50_000, RuntimeError("timeout")])
         assert pdb.prune_articles_if_needed() == 50_000
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-thread clients + transient-error retry (production incident 2026-10-03:
+# ~30 threads sharing one client got "Server disconnected" on bursts)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestClientPerThread:
+
+    def test_each_thread_gets_its_own_client(self, monkeypatch):
+        import threading
+        import supabase
+        made = []
+        monkeypatch.setattr(db, "SUPABASE_URL", "https://x.supabase.co")
+        monkeypatch.setattr(db, "SUPABASE_KEY", "k")
+        monkeypatch.setattr(supabase, "create_client", lambda *a, **k: made.append(object()) or made[-1])
+        db._local.client = None
+        seen = []
+        threads = [threading.Thread(target=lambda: seen.append(db.get_client())) for _ in range(3)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        assert len({id(c) for c in seen}) == 3
+        assert db.get_client() is db.get_client()          # stable within a thread
+
+    def test_transient_error_reconnects_and_retries_once(self, monkeypatch):
+        import httpx
+        monkeypatch.setattr(db.time, "sleep", lambda s: None)
+        calls = []
+
+        def op():
+            calls.append(1)
+            if len(calls) == 1:
+                raise httpx.RemoteProtocolError("Server disconnected")
+            return "ok"
+        assert db._retry(op) == "ok" and len(calls) == 2
+
+    def test_non_transient_error_is_not_retried(self):
+        calls = []
+
+        def op():
+            calls.append(1)
+            raise ValueError("22001 value too long")
+        with pytest.raises(ValueError):
+            db._retry(op)
+        assert len(calls) == 1

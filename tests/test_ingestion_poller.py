@@ -290,6 +290,15 @@ class TestDormancyInPoller:
         assert res["new"] == 0 and res["errors"] == 0
         assert [d[0] for d in rec.dormant] == ["f1"]
 
+    def test_failed_inserts_never_mark_a_feed_dormant(self, rec, monkeypatch):
+        """Incident 2026-10-03: every insert failed, so "0 new" made healthy feeds dormant."""
+        monkeypatch.setattr(poller, "_fetch_rss_blocking", lambda url: (_entries(), {}, None))
+        monkeypatch.setattr(poller, "crawl_article", _fake_crawl)
+        monkeypatch.setattr(db, "upsert_articles", lambda rows: (0, 0))   # all rows failed
+        res = _poll(_feed(last_new_article_at="2000-01-01T00:00:00+00:00"))
+        assert res["new"] == 0 and res["errors"] == 2
+        assert rec.dormant == []
+
     def test_never_productive_old_feed_dormant_via_created_at(self, rec, monkeypatch):
         monkeypatch.setattr(poller, "_fetch_rss_blocking", lambda url: ([], {}, None))
         _poll(_feed())                                  # created_at = year 2000

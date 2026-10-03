@@ -475,7 +475,10 @@ async def poll_one_feed(
         # is by definition alive (the `feed` row is the PRE-poll snapshot, so
         # its last_new_article_at is stale and would wrongly flag it).
         # Dormant re-checks are already dormant; nothing more to decide.
-        if inserted == 0 and not dormant_recheck:
+        # And only after a CLEAN poll: if inserts or entries failed, "0 new"
+        # says nothing about the feed (on 2026-10-03 a schema mismatch made
+        # every insert fail and healthy feeds were marked dormant).
+        if inserted == 0 and entry_errors == 0 and not dormant_recheck:
             if not has_new_article_tracking(feed):
                 log.debug("last_new_article_at not available — dormancy check "
                           "skipped (run docs/ingestion_fixes_migration.sql)")
