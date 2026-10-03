@@ -964,6 +964,10 @@ BEGIN
     'wizer_find_cluster_merge_candidates(text, timestamptz, float8, float8, integer, integer, integer, timestamptz, uuid)',
     'wizer_reconcile_cluster_counts(timestamptz)',
     'wizer_prune_orphan_clusters(integer)',
+    'wizer_merge_top_entities(jsonb, jsonb, integer)',
+    'wizer_jsonb_text_union(jsonb, jsonb, integer)',
+    'wizer_merge_image_hashes(jsonb, jsonb, integer)',
+    'wizer_phash_distance(bigint, bigint)',
     'wizer_fetch_unclustered(timestamptz, integer, timestamptz, bigint)',
     'wizer_assign_cluster_batch(jsonb, text, float8, float8, float8, integer, integer, integer, integer, integer)'
   ] LOOP
