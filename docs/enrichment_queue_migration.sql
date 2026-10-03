@@ -214,6 +214,19 @@ WHERE enriched_at IS NULL
   AND title IS NOT NULL;
 
 
+-- Explicit view grants (production's default privileges give service_role no
+-- SELECT on new views → "permission denied for view …").
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    EXECUTE 'REVOKE ALL ON TABLE enrichment_queue_health FROM anon, authenticated';
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+    EXECUTE 'GRANT SELECT ON TABLE enrichment_queue_health TO service_role';
+  END IF;
+END $$;
+
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 7. Permissions — only the pipeline's service role may call the queue RPCs.
 --

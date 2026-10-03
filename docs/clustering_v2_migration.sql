@@ -951,6 +951,19 @@ SELECT
                                           AND updated_at > now() - interval '24 hours') AS merges_24h;
 
 
+-- Explicit view grants (production's default privileges give service_role no
+-- SELECT on new views → "permission denied for view …").
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    EXECUTE 'REVOKE ALL ON TABLE cluster_health, top_stories_24h FROM anon, authenticated';
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+    EXECUTE 'GRANT SELECT ON TABLE cluster_health, top_stories_24h TO service_role';
+  END IF;
+END $$;
+
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 10. Permissions — service role only (see enrichment_queue_migration.sql §7)
 -- ─────────────────────────────────────────────────────────────────────────────

@@ -176,6 +176,11 @@ class TestMigrations:
         for priv in ("SELECT", "DELETE", "TRUNCATE"):
             assert not conn.execute("SELECT has_table_privilege('anon', %s, %s)", (table, priv)).fetchone()[0]
 
+    @pytest.mark.parametrize("view", ["cluster_health", "top_stories_24h", "enrichment_queue_health"])
+    def test_views_granted_to_service_role_only(self, conn, view):
+        assert conn.execute("SELECT has_table_privilege('service_role', %s, 'SELECT')", (view,)).fetchone()[0]
+        assert not conn.execute("SELECT has_table_privilege('anon', %s, 'SELECT')", (view,)).fetchone()[0]
+
     def test_monitoring_views_query(self, conn):
         for view in ("cluster_health", "top_stories_24h", "enrichment_queue_health"):
             conn.execute(f"SELECT * FROM {view}").fetchall()
