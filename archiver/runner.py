@@ -41,7 +41,7 @@ log = logging.getLogger(__name__)
 PART_ROWS = 10_000            # ~15 MB per article part (Storage default limit: 50 MB/file)
 ENTITY_PART_ROWS = 100_000    # entities are ~100 bytes each
 PAGE = 1_000                  # PostgREST max rows per response
-PRUNE_CHUNK = 5_000           # rows deleted per call — inside the 30 s API statement timeout
+PRUNE_CHUNK = 1_000           # rows deleted per call — small enough for the 30 s API statement timeout even on a throttled Micro instance
 
 
 class ArchiveError(RuntimeError):
