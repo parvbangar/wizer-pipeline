@@ -29,7 +29,15 @@ CREATE INDEX IF NOT EXISTS idx_clusters_outlet_set
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 2. Update find_nearest_cluster() to include outlet_set in result
+--
+-- The return type changes (new outlet_set column), which CREATE OR REPLACE
+-- cannot do — Postgres raises "cannot change return type of existing
+-- function". Drop the pgvector_migration.sql version first.
+-- (Superseded by wizer_assign_cluster in clustering_v2_migration.sql; kept so
+--  the migration history replays cleanly on a fresh database.)
 -- ─────────────────────────────────────────────────────────────────────────────
+DROP FUNCTION IF EXISTS find_nearest_cluster(vector, float, integer);
+
 CREATE OR REPLACE FUNCTION find_nearest_cluster(
   query_embedding      vector(768),
   similarity_threshold float   DEFAULT 0.82,

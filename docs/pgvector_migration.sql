@@ -63,6 +63,11 @@ CREATE INDEX IF NOT EXISTS idx_clusters_embedding_hnsw
 --                             Pass 0 to search ALL clusters (useful after pgvector
 --                             is stable — no window limit needed with HNSW).
 -- ─────────────────────────────────────────────────────────────────────────────
+-- Drop first: tier2_clustering_migration.sql redefines this function with a
+-- different return type, and CREATE OR REPLACE cannot change a return type —
+-- without the DROP, re-running the migration chain fails here.
+DROP FUNCTION IF EXISTS find_nearest_cluster(vector, float, integer);
+
 CREATE OR REPLACE FUNCTION find_nearest_cluster(
   query_embedding      vector(768),
   similarity_threshold float   DEFAULT 0.82,

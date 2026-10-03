@@ -1,0 +1,748 @@
+"""
+tests/test_clustering_sql.py
+════════════════════════════
+Integration tests for the SQL half of the pipeline — the clustering and work-
+queue functions in docs/*.sql — against a REAL PostgreSQL + pgvector.
+
+These cannot be meaningfully mocked: the behaviour under test (atomicity under
+concurrency, exact vector maths, NaN ordering, SKIP LOCKED, idempotent
+migrations) lives in the database.
+
+HOW TO RUN:
+  CI:     tests.yml starts a pgvector/pgvector:pg17 service and sets WIZER_TEST_DSN.
+  Local:  any Postgres ≥ 14 with pgvector ≥ 0.7, e.g.
+            docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=postgres pgvector/pgvector:pg17
+            export WIZER_TEST_DSN="host=localhost port=5432 user=postgres password=postgres"
+            pytest tests/test_clustering_sql.py -v
+  Without WIZER_TEST_DSN the whole module is skipped (unit tests still run).
+
+Each test gets a freshly TRUNCATED schema; the migrations are applied once per
+session into a dedicated database (wizer_test), which is dropped afterwards.
+"""
+
+from __future__ import annotations
+
+import math
+import os
+import threading
+import uuid
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+DSN = os.getenv("WIZER_TEST_DSN")
+pytestmark = pytest.mark.skipif(not DSN, reason="WIZER_TEST_DSN not set — SQL integration tests skipped")
+
+if DSN:
+    import numpy as np
+    import psycopg
+    from psycopg.rows import dict_row
+
+    from enrichment.cluster_maintenance import merge_duplicates, run_maintenance
+    from tools.db_migrations import apply_all
+    from tools.pg_backend import PgBackend
+
+TEST_DB = "wizer_test"
+MODEL = "test-model"
+T0 = datetime(2026, 10, 3, 6, 0, tzinfo=timezone.utc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Fixtures
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.fixture(scope="session")
+def database():
+    admin = psycopg.connect(f"{DSN} dbname=postgres", autocommit=True)
+    admin.execute(f"DROP DATABASE IF EXISTS {TEST_DB} WITH (FORCE)")
+    admin.execute(f"CREATE DATABASE {TEST_DB}")
+    conn = psycopg.connect(f"{DSN} dbname={TEST_DB}")
+    apply_all(conn)
+    conn.close()
+    yield f"{DSN} dbname={TEST_DB}"
+    admin.execute(f"DROP DATABASE IF EXISTS {TEST_DB} WITH (FORCE)")
+    admin.close()
+
+
+@pytest.fixture
+def conn(database):
+    c = psycopg.connect(database)
+    c.execute("TRUNCATE articles, article_clusters, article_entities, enrichment_runs RESTART IDENTITY CASCADE")
+    c.commit()
+    yield c
+    c.close()
+
+
+@pytest.fixture
+def backend(conn):
+    return PgBackend(conn)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+_rng = np.random.default_rng(1234) if DSN else None
+
+
+def unit(seed: int | None = None) -> "np.ndarray":
+    rng = np.random.default_rng(seed) if seed is not None else _rng
+    v = rng.normal(size=768)
+    return v / np.linalg.norm(v)
+
+
+def at_cos(base: "np.ndarray", cos: float, seed: int | None = None) -> "np.ndarray":
+    """A unit vector with EXACT cosine `cos` to `base`."""
+    r = unit(seed)
+    orth = r - (r @ base) * base
+    orth /= np.linalg.norm(orth)
+    return cos * base + math.sqrt(1 - cos * cos) * orth
+
+
+def vec(v) -> str:
+    return "[" + ",".join(f"{x:.7f}" for x in v) + "]"
+
+
+def add_article(conn, *, domain="a.com", title="t", published=T0, crawled=True,
+                enriched=False, lang="en") -> int:
+    row = conn.execute(
+        "INSERT INTO articles (url, url_hash, title, published_at, domain, is_crawled, "
+        "language_code, enriched_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+        (f"https://{domain}/{uuid.uuid4()}", uuid.uuid4().int >> 65, title, published, domain,
+         crawled, lang, T0 if enriched else None),
+    ).fetchone()
+    conn.commit()
+    return row[0]
+
+
+def assign(backend, article_id, v, *, published=T0, domain="a.com", title="t", model=MODEL,
+           entities=None, keys=None, phash=None, join=0.85, gray=None, anchor=0.75,
+           gap=18, span=120, lang="en") -> dict:
+    return backend.assign_cluster({
+        "p_article_id": article_id, "p_embedding": vec(v), "p_model": model,
+        "p_published_at": published.isoformat(), "p_domain": domain, "p_title": title,
+        "p_language": lang, "p_entities": entities or [], "p_entity_keys": keys or [],
+        "p_image_phash": phash, "p_join_threshold": join,
+        "p_gray_threshold": join if gray is None else gray, "p_anchor_threshold": anchor,
+        "p_min_shared_entities": 2, "p_image_max_distance": 6,
+        "p_max_gap_hours": gap, "p_max_span_hours": span, "p_candidates": 5,
+    })
+
+
+def cluster(conn, cid) -> dict:
+    with conn.cursor(row_factory=dict_row) as cur:
+        return cur.execute("SELECT * FROM article_clusters WHERE id = %s", (cid,)).fetchone()
+
+
+def new_and_assign(conn, backend, v, **kw) -> dict:
+    aid = add_article(conn, domain=kw.get("domain", "a.com"), title=kw.get("title", "t"),
+                      published=kw.get("published", T0))
+    res = assign(backend, aid, v, **kw)
+    res["article_id"] = aid
+    return res
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Migrations
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestMigrations:
+
+    def test_chain_is_idempotent(self, database):
+        """Re-running every migration on a populated database must succeed."""
+        c = psycopg.connect(database)
+        add_article(c)
+        apply_all(c)
+        assert c.execute("SELECT count(*) FROM articles").fetchone()[0] == 1
+        c.close()
+
+    def test_service_role_only(self, conn):
+        """anon/authenticated must not be able to call the queue or cluster RPCs."""
+        for fn in ("wizer_assign_cluster", "wizer_claim_enrichment_batch", "wizer_merge_clusters"):
+            assert conn.execute(
+                "SELECT bool_or(has_function_privilege('anon', p.oid, 'EXECUTE')) "
+                "FROM pg_proc p WHERE proname = %s", (fn,)
+            ).fetchone()[0] is False
+            assert conn.execute(
+                "SELECT bool_or(has_function_privilege('service_role', p.oid, 'EXECUTE')) "
+                "FROM pg_proc p WHERE proname = %s", (fn,)
+            ).fetchone()[0] is True
+
+    def test_monitoring_views_query(self, conn):
+        for view in ("cluster_health", "top_stories_24h", "enrichment_queue_health"):
+            conn.execute(f"SELECT * FROM {view}").fetchall()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# jsonb / hash helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestHelpers:
+
+    def test_merge_top_entities_sums_case_insensitively(self, conn):
+        out = conn.execute(
+            "SELECT wizer_merge_top_entities(%s::jsonb, %s::jsonb, 30)",
+            ('[{"text":"Modi","type":"PERSON","count":2}]',
+             '[{"text":"MODI","type":"PERSON"},{"text":"BJP","type":"ORG"}]'),
+        ).fetchone()[0]
+        assert out[0] == {"text": "Modi", "type": "PERSON", "count": 3}
+        assert {"text": "BJP", "type": "ORG", "count": 1} in out
+
+    def test_merge_top_entities_limit_and_blank_text(self, conn):
+        out = conn.execute(
+            "SELECT wizer_merge_top_entities('[]', %s::jsonb, 2)",
+            ('[{"text":"a"},{"text":"b"},{"text":"c"},{"text":""}]',),
+        ).fetchone()[0]
+        assert len(out) == 2
+
+    def test_jsonb_text_union_keeps_first_order(self, conn):
+        out = conn.execute("SELECT wizer_jsonb_text_union('[\"b\",\"a\"]', '[\"a\",\"c\"]', 10)").fetchone()[0]
+        assert out == ["b", "a", "c"]
+
+    def test_image_hash_merge_keeps_newest(self, conn):
+        out = conn.execute(
+            "SELECT wizer_merge_image_hashes(%s::jsonb, %s::jsonb, 2)",
+            ('[{"h":1,"d":"x"},{"h":2,"d":"x"}]', '[{"h":3,"d":"y"}]'),
+        ).fetchone()[0]
+        assert [e["h"] for e in out] == [2, 3]
+
+    @pytest.mark.parametrize("a,b,expected", [
+        (0, 0, 0), (0, 1, 1), (-1, 0, 64), (-(2 ** 63), 0, 1), (-(2 ** 63), 1, 2), (5, 6, 2),
+    ])
+    def test_phash_distance_handles_signed_values(self, conn, a, b, expected):
+        assert conn.execute("SELECT wizer_phash_distance(%s, %s)", (a, b)).fetchone()[0] == expected
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# wizer_assign_cluster
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAssign:
+
+    def test_first_article_seeds_cluster(self, conn, backend):
+        r = new_and_assign(conn, backend, unit(1), title="Budget announced")
+        assert r["action"] == "seed" and r["article_count"] == 1
+        c = cluster(conn, r["cluster_id"])
+        assert c["headline"] == "Budget announced"
+        assert c["canonical_article_id"] == r["article_id"] == c["representative_article_id"]
+        art = conn.execute("SELECT cluster_id, cluster_assignment FROM articles WHERE id = %s",
+                           (r["article_id"],)).fetchone()
+        assert str(art[0]) == str(r["cluster_id"]) and art[1] == "seed"
+
+    def test_similar_article_joins(self, conn, backend):
+        base = unit(1)
+        a = new_and_assign(conn, backend, base, domain="a.com")
+        b = new_and_assign(conn, backend, at_cos(base, 0.95), domain="b.com")
+        assert b["action"] == "join" and b["cluster_id"] == a["cluster_id"]
+        assert b["article_count"] == 2 and b["outlet_count"] == 2
+        assert b["similarity"] == pytest.approx(0.95, abs=1e-3)
+
+    def test_dissimilar_article_seeds_new_cluster(self, conn, backend):
+        base = unit(1)
+        a = new_and_assign(conn, backend, base)
+        b = new_and_assign(conn, backend, at_cos(base, 0.6))
+        assert b["action"] == "seed" and b["cluster_id"] != a["cluster_id"]
+
+    def test_same_outlet_counted_once(self, conn, backend):
+        base = unit(1)
+        new_and_assign(conn, backend, base, domain="ndtv.com")
+        r = new_and_assign(conn, backend, at_cos(base, 0.97), domain="NDTV.com")
+        assert r["article_count"] == 2 and r["outlet_count"] == 1
+
+    def test_idempotent_on_retry(self, conn, backend):
+        base = unit(1)
+        a = new_and_assign(conn, backend, base)
+        again = assign(backend, a["article_id"], base)
+        assert again["action"] == "existing" and again["cluster_id"] == a["cluster_id"]
+        assert cluster(conn, a["cluster_id"])["article_count"] == 1
+
+    def test_similarity_is_exact_average_link(self, conn, backend):
+        """Returned similarity = mean cosine between the article and every member."""
+        base = unit(1)
+        members = [base, at_cos(base, 0.97, seed=2), at_cos(base, 0.96, seed=3)]
+        for m in members:
+            new_and_assign(conn, backend, m)
+        q = at_cos(base, 0.95, seed=4)
+        r = new_and_assign(conn, backend, q)
+        expected = float(np.mean([q @ m for m in members]))
+        assert r["action"] == "join"
+        assert r["similarity"] == pytest.approx(expected, abs=2e-4)
+
+    def test_average_link_resists_chaining(self, conn, backend):
+        """
+        A chain a→b→c where each step is similar but a and c are not:
+        c is close to the CENTROID of {a, b} but its average similarity to
+        the members is below the threshold, so it must not join.
+        """
+        # Orthonormal basis e1, e2, e3; a = e1, b at cosine 0.86 from a.
+        e1, e2, e3 = (np.eye(768)[i] for i in range(3))
+        s = math.sqrt(1 - 0.86 ** 2)
+        a = e1
+        b = 0.86 * e1 + s * e2
+        # c: cos(c, a) = 0.80, cos(c, b) = 0.86  →  average 0.83 (< 0.85)
+        y = (0.86 - 0.86 * 0.80) / s
+        c = 0.80 * e1 + y * e2 + math.sqrt(1 - 0.80 ** 2 - y ** 2) * e3
+        centroid = (a + b) / np.linalg.norm(a + b)
+        assert c @ centroid > 0.85          # a CENTROID rule would accept c …
+        assert (c @ a + c @ b) / 2 < 0.85   # … average-link must not
+        new_and_assign(conn, backend, a)
+        assert new_and_assign(conn, backend, b)["action"] == "join"
+        r_c = new_and_assign(conn, backend, c, anchor=0.0)
+        assert r_c["action"] == "seed"
+
+    def test_anchor_guard_blocks_drift(self, conn, backend):
+        base = unit(1)
+        new_and_assign(conn, backend, base)
+        r = new_and_assign(conn, backend, at_cos(base, 0.9), anchor=0.95)
+        assert r["action"] == "seed"
+
+    def test_different_model_never_matches(self, conn, backend):
+        base = unit(1)
+        a = new_and_assign(conn, backend, base, model="model-a")
+        b = new_and_assign(conn, backend, base, model="model-b")
+        assert b["action"] == "seed" and b["cluster_id"] != a["cluster_id"]
+
+    def test_gap_window(self, conn, backend):
+        base = unit(1)
+        new_and_assign(conn, backend, base, published=T0)
+        late = new_and_assign(conn, backend, at_cos(base, 0.97), published=T0 + timedelta(hours=19), gap=18)
+        assert late["action"] == "seed"
+        ok = new_and_assign(conn, backend, at_cos(base, 0.97, seed=9), published=T0 + timedelta(hours=17), gap=18)
+        assert ok["action"] == "join"
+
+    def test_span_cap(self, conn, backend):
+        base = unit(1)
+        first = new_and_assign(conn, backend, base, published=T0)
+        for h in (12, 24):     # keep the story alive within the 18 h gap
+            new_and_assign(conn, backend, at_cos(base, 0.97, seed=h), published=T0 + timedelta(hours=h))
+        beyond = new_and_assign(conn, backend, at_cos(base, 0.97, seed=99),
+                                published=T0 + timedelta(hours=36), span=30)
+        assert beyond["cluster_id"] != first["cluster_id"]
+
+    def test_out_of_order_arrival_keeps_true_time_span(self, conn, backend):
+        """Newest-first processing must widen, never shrink, the cluster's span."""
+        base = unit(1)
+        new_and_assign(conn, backend, base, published=T0 + timedelta(hours=5))
+        r = new_and_assign(conn, backend, at_cos(base, 0.97), published=T0)
+        c = cluster(conn, r["cluster_id"])
+        assert c["first_seen_at"] == T0 and c["last_seen_at"] == T0 + timedelta(hours=5)
+
+    def test_gray_zone_joins_with_shared_entities(self, conn, backend):
+        base = unit(1)
+        ents = [{"text": "Smit Machchhar", "type": "PERSON"}, {"text": "flydubai", "type": "ORG"}]
+        new_and_assign(conn, backend, base, entities=ents)
+        no_evidence = new_and_assign(conn, backend, at_cos(base, 0.83, seed=2), gray=0.80)
+        assert no_evidence["action"] == "seed"
+        r = new_and_assign(conn, backend, at_cos(base, 0.83, seed=3), gray=0.80,
+                           keys=["smit machchhar", "flydubai"])
+        assert r["action"] == "gray_join"
+        assert cluster(conn, r["cluster_id"])["gray_join_count"] == 1
+
+    def test_gray_zone_image_evidence_needs_another_outlet(self, conn, backend):
+        base = unit(1)
+        new_and_assign(conn, backend, base, domain="a.com", phash=0x0F0F0F0F)
+        same_outlet = new_and_assign(conn, backend, at_cos(base, 0.83, seed=2), domain="a.com",
+                                     phash=0x0F0F0F0F, gray=0.80)
+        assert same_outlet["action"] == "seed"
+        other_outlet = new_and_assign(conn, backend, at_cos(base, 0.83, seed=3), domain="b.com",
+                                      phash=0x0F0F0F0E, gray=0.80)
+        assert other_outlet["action"] == "gray_join"
+
+    def test_gray_zone_off_when_thresholds_equal(self, conn, backend):
+        base = unit(1)
+        new_and_assign(conn, backend, base, entities=[{"text": "X", "type": "ORG"}, {"text": "Y", "type": "ORG"}])
+        r = new_and_assign(conn, backend, at_cos(base, 0.83, seed=2), keys=["x", "y"])  # gray = join
+        assert r["action"] == "seed"
+
+    def test_representative_is_most_central_member(self, conn, backend):
+        base = unit(1)
+        seed = new_and_assign(conn, backend, at_cos(base, 0.93, seed=2), title="seed headline")
+        new_and_assign(conn, backend, at_cos(base, 0.93, seed=3), title="other")
+        central = new_and_assign(conn, backend, base, title="the central one")
+        c = cluster(conn, seed["cluster_id"])
+        assert c["representative_article_id"] == central["article_id"]
+        assert c["headline"] == "the central one"
+        assert c["canonical_article_id"] == seed["article_id"]   # seed never changes
+
+    def test_centroid_sum_is_exact(self, conn, backend):
+        base = unit(1)
+        vs = [base, at_cos(base, 0.95, seed=2), at_cos(base, 0.9, seed=3)]
+        r = None
+        for v in vs:
+            r = new_and_assign(conn, backend, v)
+        stored = np.array(conn.execute(
+            "SELECT centroid_sum::text FROM article_clusters WHERE id = %s", (r["cluster_id"],)
+        ).fetchone()[0].strip("[]").split(","), dtype=float)
+        assert np.allclose(stored, np.sum(vs, axis=0), atol=1e-5)
+
+    def test_entities_and_languages_accumulate(self, conn, backend):
+        base = unit(1)
+        new_and_assign(conn, backend, base, entities=[{"text": "Modi", "type": "PERSON"}], lang="en")
+        r = new_and_assign(conn, backend, at_cos(base, 0.97),
+                           entities=[{"text": "modi", "type": "PERSON"}], lang="hi")
+        c = cluster(conn, r["cluster_id"])
+        assert c["top_entities"][0]["count"] == 2
+        assert sorted(c["language_set"]) == ["en", "hi"]
+
+    @pytest.mark.parametrize("bad", [[0.0] * 768, [float("nan")] + [0.1] * 767])
+    def test_rejects_zero_and_nan_embeddings(self, conn, backend, bad):
+        """NaN sorts above every number in Postgres — must never reach the join test."""
+        new_and_assign(conn, backend, unit(1))
+        aid = add_article(conn)
+        # pgvector itself rejects NaN on input; our guard catches the zero vector.
+        with pytest.raises(psycopg.Error, match="zero or NaN|NaN not allowed"):
+            assign(backend, aid, bad)
+        conn.rollback()
+
+    def test_rejects_wrong_dimension(self, conn, backend):
+        aid = add_article(conn)
+        with pytest.raises(psycopg.Error, match="dimensions"):
+            backend.assign_cluster({"p_article_id": aid, "p_embedding": "[1,2,3]", "p_model": MODEL,
+                                    "p_published_at": T0.isoformat(), "p_domain": "a", "p_title": "t",
+                                    "p_language": "en"})
+        conn.rollback()
+
+    def test_missing_article_raises(self, conn, backend):
+        with pytest.raises(psycopg.Error, match="does not exist"):
+            assign(backend, 999_999, unit(1))
+        conn.rollback()
+
+    def test_concurrent_runners_create_one_cluster(self, database):
+        """
+        Eight runners assign near-duplicate articles at the same instant.
+        Without the advisory lock each would see "no cluster yet" and seed its
+        own; with it they must all end up in ONE cluster with exact counts.
+        """
+        setup = psycopg.connect(database)
+        setup.execute("TRUNCATE articles, article_clusters RESTART IDENTITY CASCADE")
+        setup.commit()
+        base = unit(1)
+        ids = [add_article(setup, domain=f"d{i}.com") for i in range(8)]
+        vectors = [at_cos(base, 0.97, seed=100 + i) for i in range(8)]
+        barrier = threading.Barrier(8)
+        results, errors = [], []
+
+        def worker(i):
+            try:
+                c = psycopg.connect(database)
+                barrier.wait()
+                results.append(assign(PgBackend(c), ids[i], vectors[i], domain=f"d{i}.com"))
+                c.close()
+            except Exception as e:     # pragma: no cover - surfaced below
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors
+        assert len({r["cluster_id"] for r in results}) == 1
+        c = cluster(setup, results[0]["cluster_id"])
+        assert c["article_count"] == 8 and c["outlet_count"] == 8
+        assert sorted(r["action"] for r in results).count("seed") == 1
+        setup.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Merge / reconcile / prune
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestMaintenance:
+
+    def _twins(self, conn, backend):
+        """Two clusters about the same story that online assignment kept apart."""
+        base = unit(1)
+        a1 = new_and_assign(conn, backend, at_cos(base, 0.93, seed=2), domain="a.com", join=0.99)
+        a2 = new_and_assign(conn, backend, at_cos(base, 0.93, seed=3), domain="b.com", join=0.99)
+        a3 = new_and_assign(conn, backend, at_cos(base, 0.93, seed=4), domain="c.com", join=0.99)
+        assert len({a1["cluster_id"], a2["cluster_id"], a3["cluster_id"]}) == 3
+        return a1, a2, a3
+
+    def test_merge_clusters_moves_members_and_sums(self, conn, backend):
+        base = unit(1)
+        a = new_and_assign(conn, backend, base, domain="a.com")
+        new_and_assign(conn, backend, at_cos(base, 0.97, seed=2), domain="b.com")
+        lone = new_and_assign(conn, backend, at_cos(base, 0.8, seed=3), domain="c.com")
+        assert backend.merge_clusters(a["cluster_id"], lone["cluster_id"]) is True
+        w = cluster(conn, a["cluster_id"])
+        assert w["article_count"] == 3 and w["outlet_count"] == 3
+        loser = cluster(conn, lone["cluster_id"])
+        assert loser["status"] == "merged" and str(loser["merged_into"]) == str(a["cluster_id"])
+        assert conn.execute("SELECT count(*) FROM articles WHERE cluster_id = %s",
+                            (a["cluster_id"],)).fetchone()[0] == 3
+
+    def test_merge_refuses_inactive_or_cross_model(self, conn, backend):
+        a = new_and_assign(conn, backend, unit(1))
+        b = new_and_assign(conn, backend, unit(2))
+        other = new_and_assign(conn, backend, unit(3), model="other-model")
+        assert backend.merge_clusters(a["cluster_id"], a["cluster_id"]) is False
+        assert backend.merge_clusters(a["cluster_id"], other["cluster_id"]) is False
+        assert backend.merge_clusters(a["cluster_id"], b["cluster_id"]) is True
+        assert backend.merge_clusters(a["cluster_id"], b["cluster_id"]) is False   # b is now a tombstone
+
+    def test_merge_repoints_tombstone_chain(self, conn, backend):
+        a, b, c = (new_and_assign(conn, backend, unit(i)) for i in (1, 2, 3))
+        backend.merge_clusters(b["cluster_id"], c["cluster_id"])
+        backend.merge_clusters(a["cluster_id"], b["cluster_id"])
+        assert str(cluster(conn, c["cluster_id"])["merged_into"]) == str(a["cluster_id"])
+
+    def test_merge_candidates_report_every_probe(self, conn, backend):
+        a1, a2, a3 = self._twins(conn, backend)
+        rows = backend.find_merge_candidates({
+            "p_model": MODEL, "p_since": (T0 - timedelta(days=3650)).isoformat(),
+            "p_threshold": 0.8, "p_anchor_threshold": 0.5, "p_max_gap_hours": 18,
+            "p_max_span_hours": 120, "p_probe_limit": 200,
+        })
+        assert len(rows) == 3                                   # one row per probe
+        assert all(r["other_id"] is not None for r in rows)
+        assert all(r["similarity"] == pytest.approx(0.93 * 0.93, abs=0.05) for r in rows)
+
+    def test_merge_duplicates_end_to_end(self, conn, backend):
+        self._twins(conn, backend)
+        rep = merge_duplicates(backend, T0 - timedelta(days=3650), threshold=0.8, model=MODEL)
+        assert rep.merges == 2
+        active = conn.execute("SELECT article_count, outlet_count FROM article_clusters "
+                              "WHERE status = 'active'").fetchall()
+        assert active == [(3, 3)]
+
+    def test_merge_duplicates_dry_run_changes_nothing(self, conn, backend):
+        self._twins(conn, backend)
+        rep = merge_duplicates(backend, T0 - timedelta(days=3650), threshold=0.8, model=MODEL, dry_run=True)
+        assert rep.merges == 0 and len(rep.planned) == 1
+        assert conn.execute("SELECT count(*) FROM article_clusters WHERE status = 'active'").fetchone()[0] == 3
+
+    def test_reconcile_repairs_counts_after_article_deletion(self, conn, backend):
+        base = unit(1)
+        a = new_and_assign(conn, backend, base, domain="a.com")
+        b = new_and_assign(conn, backend, at_cos(base, 0.97), domain="b.com")
+        conn.execute("DELETE FROM articles WHERE id = %s", (b["article_id"],))   # Layer 1 pruning
+        conn.commit()
+        fixed = backend.reconcile_cluster_counts((T0 - timedelta(days=3650)).isoformat())
+        assert fixed == 1
+        c = cluster(conn, a["cluster_id"])
+        assert c["article_count"] == 1 and c["outlet_count"] == 1 and c["outlet_set"] == ["a.com"]
+        assert backend.reconcile_cluster_counts((T0 - timedelta(days=3650)).isoformat()) == 0
+
+    def test_prune_deletes_only_idle_orphans(self, conn, backend):
+        a = new_and_assign(conn, backend, unit(1))
+        b = new_and_assign(conn, backend, unit(2))
+        conn.execute("DELETE FROM articles WHERE id = %s", (b["article_id"],))
+        conn.execute("UPDATE article_clusters SET updated_at = now() - interval '10 days'")
+        conn.commit()
+        assert backend.prune_orphan_clusters(168) == 1
+        assert cluster(conn, b["cluster_id"]) is None and cluster(conn, a["cluster_id"]) is not None
+
+    def test_run_maintenance_full_pass(self, conn, backend):
+        rep = run_maintenance(backend, lookback_hours=24)
+        assert rep.merges == 0 and rep.reconciled == 0 and rep.pruned == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Work queue
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _claim(conn, limit=10, age=48, lease=150, attempts=3) -> list[int]:
+    rows = conn.execute("SELECT id FROM wizer_claim_enrichment_batch(%s, %s, %s, %s)",
+                        (limit, age, lease, attempts)).fetchall()
+    conn.commit()
+    return sorted(r[0] for r in rows)
+
+
+class TestQueue:
+
+    def test_claims_are_disjoint_across_runners(self, database):
+        c1, c2 = psycopg.connect(database), psycopg.connect(database)
+        c1.execute("TRUNCATE articles RESTART IDENTITY CASCADE")
+        c1.commit()
+        now = datetime.now(timezone.utc)
+        for i in range(10):
+            add_article(c1, published=now - timedelta(minutes=i))
+        first, second = _claim(c1, 6), _claim(c2, 6)
+        assert len(first) == 6 and len(second) == 4
+        assert not set(first) & set(second)
+        c1.close()
+        c2.close()
+
+    def test_newest_first_and_eligibility(self, conn):
+        now = datetime.now(timezone.utc)
+        new = add_article(conn, published=now)
+        add_article(conn, published=now - timedelta(hours=72))   # too old
+        add_article(conn, published=now, crawled=False)          # not crawled
+        add_article(conn, published=now, enriched=True)          # already done
+        mid = add_article(conn, published=now - timedelta(hours=1))
+        rows = conn.execute("SELECT id FROM wizer_claim_enrichment_batch(1, 48, 150, 3)").fetchall()
+        assert [r[0] for r in rows] == [new]
+        assert _claim(conn) == [mid]
+
+    def test_expired_lease_is_reclaimable_and_attempts_cap(self, conn):
+        aid = add_article(conn, published=datetime.now(timezone.utc))
+        assert _claim(conn) == [aid]
+        assert _claim(conn) == []                                # leased
+        for _ in range(2):
+            conn.execute("UPDATE articles SET enrich_claimed_at = now() - interval '3 hours'")
+            conn.commit()
+            assert _claim(conn) == [aid]                         # lease expired → reclaimed
+        conn.execute("UPDATE articles SET enrich_claimed_at = now() - interval '3 hours'")
+        conn.commit()
+        assert _claim(conn) == []                                # 3 attempts used → dead letter
+        assert conn.execute("SELECT dead_letter FROM enrichment_queue_health").fetchone()[0] == 1
+
+    def test_release_refunds_the_attempt(self, conn):
+        aid = add_article(conn, published=datetime.now(timezone.utc))
+        _claim(conn)
+        released = conn.execute("SELECT wizer_release_enrichment_claims(%s)", ([aid],)).fetchone()[0]
+        conn.commit()
+        assert released == 1
+        attempts, claimed = conn.execute(
+            "SELECT enrich_attempts, enrich_claimed_at FROM articles WHERE id = %s", (aid,)).fetchone()
+        assert attempts == 0 and claimed is None
+        assert _claim(conn) == [aid]
+
+    def test_queue_depth(self, conn):
+        now = datetime.now(timezone.utc)
+        add_article(conn, published=now)
+        add_article(conn, published=now - timedelta(hours=100))
+        assert conn.execute("SELECT wizer_enrichment_queue_depth(48, 3)").fetchone()[0] == 1
+        assert conn.execute("SELECT wizer_enrichment_queue_depth(0, 3)").fetchone()[0] == 2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PostgREST argument decoding
+#
+# In production every call goes Python → supabase-py (JSON body) → PostgREST,
+# which decodes the body with json_to_record() against the function's declared
+# argument types and then calls the function with named arguments. The risky
+# conversions are exactly the ones our RPCs rely on: a pgvector literal sent
+# as a JSON string, JSON arrays becoming text[] / bigint[], nested JSON
+# becoming jsonb. These tests push the real payloads through that same
+# decoding step.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def postgrest_call(conn, fn: str, payload: dict) -> list[dict]:
+    import json as _json
+    arg_rows = conn.execute(
+        "SELECT unnest(proargnames) AS name, format_type(unnest(proargtypes::oid[]), NULL) AS type, "
+        "       generate_series(1, pronargs) AS pos "
+        "FROM pg_proc WHERE proname = %s AND pronargs > 0", (fn,)
+    ).fetchall()
+    in_args = [(n, t) for n, t, _ in arg_rows if n in payload]
+    coldefs = ", ".join(f'"{n}" {t}' for n, t in in_args)
+    call = ", ".join(f'"{n}" := a."{n}"' for n, _ in in_args)
+    sql = (f"SELECT r.* FROM json_to_record(%s::json) AS a({coldefs}), "
+           f"LATERAL {fn}({call}) AS r")
+    with conn.cursor(row_factory=dict_row) as cur:
+        rows = cur.execute(sql, (_json.dumps(payload),)).fetchall()
+    conn.commit()
+    return rows
+
+
+class TestPostgrestDecoding:
+
+    def test_assign_cluster_payload_from_python(self, conn):
+        from enrichment.clustering import build_assign_params
+        aid = add_article(conn, domain="thehindu.com")
+        article = {"id": aid, "title": "Headline", "domain": "thehindu.com",
+                   "published_at": T0.isoformat(), "language_code": "en"}
+        ents = [{"entity_text": "Smit Machchhar", "entity_type": "PERSON", "salience": 0.9}]
+        payload = build_assign_params(article, list(unit(5)), ents, -1234567890123, "en")
+        rows = postgrest_call(conn, "wizer_assign_cluster", payload)
+        assert rows[0]["action"] == "seed"
+        c = cluster(conn, rows[0]["cluster_id"])
+        assert c["top_entities"] == [{"text": "Smit Machchhar", "type": "PERSON", "count": 1}]
+        assert c["entity_set"] == ["smit machchhar"]
+        assert c["image_hashes"] == [{"h": -1234567890123, "d": "thehindu.com"}]
+        assert c["embedding_model"] == payload["p_model"]
+
+    def test_claim_and_release_payloads(self, conn):
+        now = datetime.now(timezone.utc)
+        ids = [add_article(conn, published=now - timedelta(minutes=i)) for i in range(3)]
+        rows = postgrest_call(conn, "wizer_claim_enrichment_batch", {
+            "p_limit": 2, "p_max_age_hours": 48, "p_lease_minutes": 150, "p_max_attempts": 3})
+        assert sorted(r["id"] for r in rows) == sorted(ids[:2])
+        assert "full_text" in rows[0] and "enrich_attempts" in rows[0]     # SETOF articles
+        released = postgrest_call(conn, "wizer_release_enrichment_claims", {"p_ids": ids})
+        assert list(released[0].values())[0] == 2
+
+    def test_merge_candidates_payload_from_python(self, conn, backend):
+        base = unit(1)
+        new_and_assign(conn, backend, at_cos(base, 0.93, seed=2), join=0.99)
+        new_and_assign(conn, backend, at_cos(base, 0.93, seed=3), join=0.99)
+        payload = {
+            "p_model": MODEL, "p_since": (T0 - timedelta(days=1)).isoformat(), "p_threshold": 0.8,
+            "p_anchor_threshold": 0.5, "p_max_gap_hours": 18, "p_max_span_hours": 120,
+            "p_probe_limit": 200, "p_after_ts": "-infinity",
+            "p_after_id": "00000000-0000-0000-0000-000000000000",
+        }
+        rows = postgrest_call(conn, "wizer_find_cluster_merge_candidates", payload)
+        assert len(rows) == 2 and all(r["other_id"] for r in rows)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Layer 1 table-size cap (docs/ingestion_fixes_migration.sql)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestArticlePruning:
+
+    def test_prunes_oldest_down_to_target_in_chunks(self, conn):
+        ids = [add_article(conn) for _ in range(25)]
+        assert conn.execute("SELECT wizer_prune_articles(30, 10, 5)").fetchone()[0] == 0  # under limit
+        first = conn.execute("SELECT wizer_prune_articles(20, 10, 5)").fetchone()[0]
+        conn.commit()
+        assert first == 5                                   # chunk-bounded
+        total = 5
+        while True:                                         # caller loop, as in pipeline/db.py
+            n = conn.execute("SELECT wizer_prune_articles(10, 10, 5)").fetchone()[0]
+            conn.commit()
+            total += n
+            if n < 5:
+                break
+        remaining = [r[0] for r in conn.execute("SELECT id FROM articles ORDER BY id").fetchall()]
+        assert total == 15 and remaining == ids[-10:]       # the NEWEST 10 survive
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Clustering job feed + batched assignment (cluster.py run)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestClusteringJob:
+
+    def test_fetch_unclustered_keyset_oldest_first(self, conn):
+        ids = [add_article(conn, published=T0 + timedelta(minutes=m)) for m in (30, 10, 20)]
+        add_article(conn, published=T0 - timedelta(days=5))                     # outside window
+        conn.execute("UPDATE articles SET full_text = repeat('x', 5000) WHERE id = %s", (ids[0],))
+        conn.commit()
+        since = (T0 - timedelta(hours=1)).isoformat()
+        page1 = postgrest_call(conn, "wizer_fetch_unclustered", {"p_since": since, "p_limit": 2})
+        assert [r["id"] for r in page1] == [ids[1], ids[2]]
+        page2 = postgrest_call(conn, "wizer_fetch_unclustered", {
+            "p_since": since, "p_limit": 2,
+            "p_after_published": page1[-1]["published_at"].isoformat(), "p_after_id": page1[-1]["id"]})
+        assert [r["id"] for r in page2] == [ids[0]]
+        assert len(page2[0]["body_lead"]) == 1500                              # trimmed for the wire
+
+    def test_fetch_skips_clustered_articles(self, conn, backend):
+        r = new_and_assign(conn, backend, unit(1))
+        other = add_article(conn)
+        rows = postgrest_call(conn, "wizer_fetch_unclustered",
+                              {"p_since": (T0 - timedelta(hours=1)).isoformat()})
+        assert [x["id"] for x in rows] == [other] and r["article_id"] != other
+
+    def test_batch_assign_matches_single_assign_and_isolates_failures(self, conn):
+        from enrichment.clustering import _ITEM_KEYS, _SHARED_KEYS, build_assign_params
+        base = unit(1)
+        good = [add_article(conn, domain=f"d{i}.com") for i in range(3)]
+        items, shared = [], None
+        for i, aid in enumerate(good + [987654321]):           # last id does not exist
+            art = {"id": aid, "title": f"t{i}", "domain": f"d{i}.com",
+                   "published_at": T0.isoformat(), "language_code": "en"}
+            p = build_assign_params(art, list(at_cos(base, 0.97, seed=200 + i)), [], None, "en", model_id=MODEL)
+            shared = shared or {k: p[k] for k in _SHARED_KEYS}
+            items.append({k: p[k] for k in _ITEM_KEYS})
+        rows = postgrest_call(conn, "wizer_assign_cluster_batch", {"p_items": items, **shared})
+        assert [r.get("error") for r in rows[:3]] == [None, None, None], rows
+        assert [r["action"] for r in rows[:3]] == ["seed", "join", "join"]
+        assert len({r["cluster_id"] for r in rows[:3]}) == 1 and rows[2]["outlet_count"] == 3
+        assert rows[3]["cluster_id"] is None and "does not exist" in rows[3]["error"]
+        again = postgrest_call(conn, "wizer_assign_cluster_batch", {"p_items": items[:1], **shared})
+        assert again[0]["action"] == "existing"                                # idempotent

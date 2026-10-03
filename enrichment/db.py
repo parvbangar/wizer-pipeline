@@ -24,8 +24,8 @@ from supabase import create_client, Client, ClientOptions
 
 from enrichment.config import (
     SUPABASE_URL, SUPABASE_KEY,
-    TABLE_ARTICLES, TABLE_ENTITIES,
-    ENRICH_MAX_AGE_HOURS,
+    TABLE_ARTICLES, TABLE_ENTITIES, TABLE_RUNS,
+    ENRICH_MAX_AGE_HOURS, ENRICH_CLAIM_LEASE_MINUTES, ENRICH_MAX_ATTEMPTS,
 )
 
 log = logging.getLogger(__name__)
@@ -38,10 +38,27 @@ _client: Client | None = None
 # 20 s is generous for any real write while failing fast on dead connections.
 _DB_TIMEOUT_SECONDS = 20
 
+# A pooled HTTP connection that sat idle while models ran is often silently
+# dropped by the network (NAT / load-balancer idle timeouts). The next request
+# then hangs for the full _DB_TIMEOUT_SECONDS before the retry reconnects —
+# production enrichment averaged ~65 s per article against ~16 s of actual NLP
+# work. Re-creating the client after an idle gap avoids the dead connection
+# instead of waiting it out.
+_IDLE_RESET_SECONDS = 45
+_last_used = 0.0
+
 
 def get_client() -> Client:
-    """Return the singleton Supabase client, creating it on first call."""
-    global _client
+    """
+    Return the singleton Supabase client, creating it on first call — or
+    re-creating it if it has been idle longer than _IDLE_RESET_SECONDS.
+    """
+    global _client, _last_used
+    now = time.monotonic()
+    if _client is not None and _last_used and now - _last_used > _IDLE_RESET_SECONDS:
+        log.debug("DB client idle %.0fs — reconnecting proactively", now - _last_used)
+        _client = None
+    _last_used = now
     if _client is None:
         if not SUPABASE_URL or not SUPABASE_KEY:
             raise RuntimeError(
@@ -284,3 +301,249 @@ def save_entities(article_id: str, entities: list[dict]) -> bool:
         return False
 
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WORK QUEUE — claim / release (docs/enrichment_queue_migration.sql)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# PostgREST caps every response at max_rows (1000 on Supabase by default), RPC
+# result sets included. Claiming in pages well under that keeps a claimed row
+# from ever being "claimed but not returned" (which would strand it until its
+# lease expired).
+_CLAIM_PAGE = 500
+
+
+def claim_batch(
+    limit: int,
+    max_age_hours: int = ENRICH_MAX_AGE_HOURS,
+    lease_minutes: int = ENRICH_CLAIM_LEASE_MINUTES,
+    max_attempts: int = ENRICH_MAX_ATTEMPTS,
+) -> list[dict]:
+    """
+    Atomically lease up to `limit` unenriched articles for this runner.
+
+    Concurrent runners (parallel shards, overlapping workflow_run triggers)
+    each get disjoint rows — FOR UPDATE SKIP LOCKED in
+    wizer_claim_enrichment_batch(). Returned newest-first.
+
+    Raises if the RPC is missing (migration not applied) or the DB is
+    unreachable: a run that cannot claim work must fail loudly, not report a
+    successful empty run.
+    """
+    claimed: list[dict] = []
+    while len(claimed) < limit:
+        page = min(_CLAIM_PAGE, limit - len(claimed))
+        resp = _run_with_retry(lambda: get_client().rpc("wizer_claim_enrichment_batch", {
+            "p_limit":          page,
+            "p_max_age_hours":  max_age_hours,
+            "p_lease_minutes":  lease_minutes,
+            "p_max_attempts":   max_attempts,
+        }).execute())
+        rows = resp.data or []
+        claimed.extend(rows)
+        if len(rows) < page:
+            break
+    claimed.sort(key=lambda r: r.get("published_at") or "", reverse=True)
+    return claimed
+
+
+def release_claims(article_ids: list) -> int:
+    """
+    Return unprocessed claimed articles to the queue immediately (instead of
+    making them wait out the lease). Best-effort: on failure the lease simply
+    expires later. Returns the number of rows released.
+    """
+    if not article_ids:
+        return 0
+    released = 0
+    for i in range(0, len(article_ids), 1000):
+        chunk = article_ids[i:i + 1000]
+        try:
+            resp = _run_with_retry(lambda: get_client().rpc(
+                "wizer_release_enrichment_claims", {"p_ids": chunk}
+            ).execute())
+            released += int(resp.data or 0)
+        except Exception as e:
+            log.warning("release_claims failed for %d ids (lease will expire instead): %s",
+                        len(chunk), e)
+    return released
+
+
+def queue_depth(
+    max_age_hours: int = ENRICH_MAX_AGE_HOURS,
+    max_attempts: int = ENRICH_MAX_ATTEMPTS,
+) -> int | None:
+    """Eligible unenriched articles right now (None if the count failed)."""
+    try:
+        resp = _run_with_retry(lambda: get_client().rpc("wizer_enrichment_queue_depth", {
+            "p_max_age_hours": max_age_hours,
+            "p_max_attempts":  max_attempts,
+        }).execute())
+        return int(resp.data) if resp.data is not None else None
+    except Exception as e:
+        log.warning("queue_depth failed: %s", e)
+        return None
+
+
+def mark_enrichment_failed(article_id, error: str) -> bool:
+    """
+    Park an article that crashed enrich_one() on its final attempt:
+    enriched_at is set (it leaves the queue) and enrich_error records why.
+    """
+    return save_article_enrichment(article_id, {"enrich_error": (error or "")[:1000]})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RUN LOG — enrichment_runs
+# ─────────────────────────────────────────────────────────────────────────────
+
+def log_run_start(row: dict) -> str | None:
+    """Insert an enrichment_runs row; returns its id (None if logging failed)."""
+    try:
+        resp = _run_with_retry(
+            lambda: get_client().table(TABLE_RUNS).insert(row).execute()
+        )
+        rows = resp.data or []
+        return rows[0]["id"] if rows else None
+    except Exception as e:
+        log.warning("enrichment_runs insert failed (run continues unlogged): %s", e)
+        return None
+
+
+def log_run_finish(run_id: str | None, row: dict) -> None:
+    """Complete an enrichment_runs row with final counters."""
+    if not run_id:
+        return
+    row = {**row, "finished_at": datetime.now(timezone.utc).isoformat()}
+    try:
+        _run_with_retry(
+            lambda: get_client().table(TABLE_RUNS).update(row).eq("id", run_id).execute()
+        )
+    except Exception as e:
+        log.warning("enrichment_runs update failed: %s", e)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STORY CLUSTERING (docs/clustering_v2_migration.sql)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def assign_cluster(params: dict) -> dict | None:
+    """
+    Call wizer_assign_cluster — find/create the article's story cluster and
+    stamp articles.cluster_id, atomically.
+
+    Safe to retry: the SQL function is idempotent (an already-clustered
+    article returns action='existing' without changing anything), so the
+    reconnect-and-retry in _run_with_retry cannot double-count an article.
+
+    Returns {cluster_id, action, similarity, article_count, outlet_count} or
+    None on failure (logged; the article is enriched without a cluster and
+    `python cluster.py backfill` can pick it up later).
+    """
+    try:
+        resp = _run_with_retry(
+            lambda: get_client().rpc("wizer_assign_cluster", params).execute()
+        )
+    except Exception as e:
+        log.warning("[%s] wizer_assign_cluster failed: %s", params.get("p_article_id"), e)
+        return None
+    rows = resp.data or []
+    return rows[0] if rows else None
+
+
+def fetch_unclustered(
+    since_iso: str,
+    limit: int = 500,
+    after_published: str | None = None,
+    after_id: int | None = None,
+) -> list[dict]:
+    """
+    One page of articles without a cluster (wizer_fetch_unclustered), oldest
+    first, keyset-paged on (published_at, id). Includes articles that have not
+    been NLP-enriched yet: clustering covers every ingested article.
+    """
+    params = {"p_since": since_iso, "p_limit": min(limit, _PAGE_SIZE)}
+    if after_published is not None:
+        params.update({"p_after_published": after_published, "p_after_id": after_id})
+    resp = _run_with_retry(lambda: get_client().rpc("wizer_fetch_unclustered", params).execute())
+    return resp.data or []
+
+
+def assign_cluster_batch(items: list[dict], shared: dict) -> list[dict] | None:
+    """
+    wizer_assign_cluster_batch — many articles per round trip. Per-item
+    failures come back in each row's `error`; None means the whole call failed.
+    Safe to retry: assignment is idempotent per article.
+    """
+    try:
+        resp = _run_with_retry(lambda: get_client().rpc(
+            "wizer_assign_cluster_batch", {"p_items": items, **shared}).execute())
+        return resp.data or []
+    except Exception as e:
+        log.warning("wizer_assign_cluster_batch failed for %d items: %s", len(items), e)
+        return None
+
+
+def fetch_entities_for_articles(article_ids: list) -> dict:
+    """{article_id: [entity dicts]} from article_entities, for backfill."""
+    out: dict = {aid: [] for aid in article_ids}
+    for i in range(0, len(article_ids), 200):
+        chunk = article_ids[i:i + 200]
+        offset = 0
+        while True:
+            resp = _run_with_retry(lambda: (
+                get_client().table(TABLE_ENTITIES)
+                .select("article_id, entity_text, entity_type, salience")
+                .in_("article_id", chunk)
+                .order("article_id")
+                .range(offset, offset + _PAGE_SIZE - 1)
+                .execute()
+            ))
+            rows = resp.data or []
+            for r in rows:
+                out.setdefault(r["article_id"], []).append(r)
+            if len(rows) < _PAGE_SIZE:
+                break
+            offset += _PAGE_SIZE
+    return out
+
+
+def find_merge_candidates(params: dict) -> list[dict]:
+    """One page of wizer_find_cluster_merge_candidates (maintenance)."""
+    resp = _run_with_retry(
+        lambda: get_client().rpc("wizer_find_cluster_merge_candidates", params).execute()
+    )
+    return resp.data or []
+
+
+def merge_clusters(winner_id: str, loser_id: str) -> bool:
+    """Fold loser into winner; False if either is no longer mergeable."""
+    resp = _run_with_retry(lambda: get_client().rpc("wizer_merge_clusters", {
+        "p_winner": winner_id, "p_loser": loser_id,
+    }).execute())
+    return bool(resp.data)
+
+
+def reconcile_cluster_counts(since_iso: str) -> int:
+    """Recount cluster stats from member articles; returns clusters repaired."""
+    resp = _run_with_retry(lambda: get_client().rpc(
+        "wizer_reconcile_cluster_counts", {"p_since": since_iso}
+    ).execute())
+    return int(resp.data or 0)
+
+
+def prune_orphan_clusters(older_than_hours: int) -> int:
+    """Delete idle clusters that no article points at; returns count deleted."""
+    resp = _run_with_retry(lambda: get_client().rpc(
+        "wizer_prune_orphan_clusters", {"p_older_than_hours": older_than_hours}
+    ).execute())
+    return int(resp.data or 0)
+
+
+def fetch_view(view: str, limit: int = 50) -> list[dict]:
+    """Read a monitoring view (cluster_health, top_stories_24h, …)."""
+    resp = _run_with_retry(
+        lambda: get_client().table(view).select("*").limit(limit).execute()
+    )
+    return resp.data or []

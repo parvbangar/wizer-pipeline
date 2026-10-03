@@ -1,0 +1,5 @@
+# Clustering job (.github/workflows/cluster.yml, cluster_maintenance.yml):
+# Layer 1 basics (supabase client, dotenv) + the sentence-embedding stack only.
+# torch is installed separately as the CPU-only wheel (see cluster.yml).
+-r requirements-ingest.txt
+sentence-transformers>=3.0.0
