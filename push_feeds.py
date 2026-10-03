@@ -222,7 +222,7 @@ def _csv_row_to_feed(row: dict, table_cols: set[str]) -> dict:
 
     # update_cadence: NEVER leave it NULL/empty.  No workflow polls a NULL
     # cadence, so such feeds would silently never be fetched.  'unknown' IS
-    # polled (ingest_daily.yml runs `main.py --cadence unknown` every 12 h).
+    # polled (ingest-daily.yml runs `main.py --cadence unknown` every 12 h).
     # Unrecognised values are folded to 'unknown' for the same reason.
     if "update_cadence" in table_cols:
         feed["update_cadence"] = _normalise_cadence(row.get("update_cadence", ""))

@@ -44,7 +44,7 @@ class TestCadenceDefault:
     def test_unknown_cadence_is_actually_polled_by_a_workflow(self):
         """Every cadence push_feeds can emit must be polled by some workflow."""
         polled = set()
-        for wf in (ROOT / ".github" / "workflows").glob("ingest_*.yml"):
+        for wf in (ROOT / ".github" / "workflows").glob("ingest-*.yml"):
             polled |= set(re.findall(r"main\.py --cadence (\w+)", wf.read_text(encoding="utf-8")))
         assert push_feeds._KNOWN_CADENCES <= polled
 
@@ -93,7 +93,7 @@ class TestRequirementsIngest:
             assert not re.search(rf"^{heavy}\b", text, re.M)
 
     def test_ingest_workflows_use_it(self):
-        wfs = list((ROOT / ".github" / "workflows").glob("ingest_*.yml"))
+        wfs = list((ROOT / ".github" / "workflows").glob("ingest-*.yml"))
         assert len(wfs) == 6
         for wf in wfs:
             text = wf.read_text(encoding="utf-8")

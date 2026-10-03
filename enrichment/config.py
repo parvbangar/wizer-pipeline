@@ -206,7 +206,7 @@ SENTIMENT_NEGATIVE_THRESHOLD = 0.40
 # ENRICH_CLAIM_LEASE_MINUTES:
 #   A claimed article is reserved for this long. If the runner dies, the claim
 #   expires and another run picks the article up. MUST exceed the longest run
-#   (enrich.yml timeout-minutes = 120), or a slow-but-alive run could have its
+#   (enrichment.yml timeout-minutes = 120), or a slow-but-alive run could have its
 #   articles re-claimed underneath it.
 #
 # ENRICH_MAX_ATTEMPTS:

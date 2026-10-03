@@ -11,7 +11,7 @@
 -r requirements-ingest.txt
 
 # ── Layer 2: Enrichment ───────────────────────────────────────────────────────
-# NOTE: torch is installed separately in enrich.yml with --index-url for CPU-only
+# NOTE: torch is installed separately in enrichment.yml with --index-url for CPU-only
 # (200 MB) to avoid the 2 GB CUDA wheel. These packages depend on torch but
 # won't re-download it if torch is already installed when pip runs.
 

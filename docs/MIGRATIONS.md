@@ -101,7 +101,7 @@ SELECT * FROM enrichment_runs ORDER BY started_at DESC LIMIT 10;
 
 | problem | switch |
 |---|---|
-| clustering misbehaves | repository variable `CLUSTERING_ENABLED=false` (Settings → Variables; read by enrich.yml) (enrichment continues, articles are saved without a cluster; backfill later) |
+| clustering misbehaves | repository variable `CLUSTERING_ENABLED=false` (Settings → Variables; read by enrichment.yml) (enrichment continues, articles are saved without a cluster; backfill later) |
 | clusters too coarse or too fine | `CLUSTER_JOIN_THRESHOLD`, `CLUSTER_MERGE_THRESHOLD` (re-calibrate first, see `docs/CLUSTERING.md` §6) |
 | maintenance merges look wrong | `workflow_dispatch` with `dry_run=true`, or disable the workflow |
 | URL hash transition | `LEGACY_URL_HASH_CHECK=1` (default) keeps old hashes deduplicating; turn it off about 90 days after deploy |

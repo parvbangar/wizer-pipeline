@@ -50,12 +50,12 @@ Apply the SQL migrations first, in the order given in [`docs/MIGRATIONS.md`](doc
 
 | Cadence | Workflow | Cron | Poll interval |
 |---|---|---|---|
-| `breaking_news` | `ingest_breaking_news.yml` | every hour | 60 min |
-| `multiple_daily` | `ingest_multiple_daily.yml` | every 3 h | 3 h |
-| `daily` + `unknown` | `ingest_daily.yml` | every 12 h | 12 h |
-| `several_weekly` | `ingest_several_weekly.yml` | daily 01:00 | 24 h |
-| `weekly` | `ingest_weekly.yml` | daily 02:00 | 24 h |
-| `monthly` | `ingest_monthly.yml` | daily 03:00 | 24 h |
+| `breaking_news` | `ingest-breaking-news.yml` | every hour | 60 min |
+| `multiple_daily` | `ingest-multiple-daily.yml` | every 3 h | 3 h |
+| `daily` + `unknown` | `ingest-daily.yml` | every 12 h | 12 h |
+| `several_weekly` | `ingest-several-weekly.yml` | daily 01:00 | 24 h |
+| `weekly` | `ingest-weekly.yml` | daily 02:00 | 24 h |
+| `monthly` | `ingest-monthly.yml` | daily 03:00 | 24 h |
 
 A feed is due once `FEED_DUE_TOLERANCE` (default 0.9) of its interval has passed. The cron
 period equals the interval and `last_polled_at` is stamped when the feed *finishes*, so a
@@ -107,7 +107,7 @@ the timer.
 
 ### Triggers and concurrency
 
-`enrich.yml` runs about a minute after any ingestion workflow finishes (`workflow_run`), plus
+`enrichment.yml` runs about a minute after any ingestion workflow finishes (`workflow_run`), plus
 hourly at :30 as a fallback. **Three runners** start each time and each **claims** its own
 batch of up to 1,000 articles from the work queue:
 
