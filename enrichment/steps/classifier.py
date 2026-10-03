@@ -70,7 +70,6 @@ def _get_pipeline():
                 "zero-shot-classification",
                 model=DEBERTA_MODEL,
                 device=-1,       # -1 = CPU
-                multi_label=False,
             )
             log.info("mDeBERTa model loaded")
         except ImportError:
@@ -82,49 +81,95 @@ def _get_pipeline():
 
 # ── Category labels ────────────────────────────────────────────────────────────
 #
-# Labels are written as NLI hypothesis completions.
-# The transformers zero-shot pipeline internally forms:
-#   "This example is [label]."
-# So labels must read naturally in that template.
+# MEASURED, NOT GUESSED — tools/classifier_eval/ scores designs against 160
+# hand-labelled live Indian headlines (English + Hindi):
 #
-# Keyword-soup labels ("cricket IPL T20 batting...") do NOT work well because
-# the model is trained on natural-language entailment, not keyword matching.
-# "about cricket or the IPL" reads as a proper hypothesis; a keyword list does not.
+#   design                                              accuracy  "general"
+#   long "about X, Y, or Z" phrases, softmax, t=0.20      33.8 %     55 %
+#   short single-concept labels, independent, t=0.30      64.4 %      7 %
+#   + cricket⊂sports rule, headline+description input     68.1 %     11 %   ← this
 #
-# Labels are kept distinct so the softmax spread is clean:
-#   - "cricket" is separate from "sports" to avoid splitting cricket traffic
-#   - "international news" is scoped narrowly to avoid absorbing everything that
-#     mentions a foreign country (which caused the 37% "world" overcounting bug)
-
-_CANDIDATE_LABELS = [
-    "about cricket, the IPL, or a cricket match or tournament",
-    "about Indian politics, elections, parliament, or government policy",
-    "about business, the economy, stock markets, or corporate finance",
-    "about Bollywood, movies, music, entertainment, or Indian celebrities",
-    "about technology, software, artificial intelligence, or tech startups",
-    "about sports other than cricket, such as football, hockey, kabaddi, or athletics",
-    "about health, medicine, hospitals, disease, or public healthcare",
-    "about education, schools, colleges, university exams, or student affairs",
-    "about crime, police, courts, arrests, or legal investigations",
-    "about the environment, climate change, floods, droughts, or pollution",
-    "about international relations, foreign affairs, or events outside India",
-    "about cryptocurrency, bitcoin, blockchain, or digital currency",
-]
+# Why the old design failed: NLI models lean on word overlap between premise
+# and hypothesis. The old "world" label ended "…or events outside India", so
+# nearly EVERY Indian headline overlapped it — "world" won almost everything,
+# "crypto" came second, and the 0.20 cut-off then sent most articles to
+# "general" (84 % of articles in an end-to-end run).
+#
+# The fix:
+#   - short labels naming ONE concept ("crime", "law and courts"), several of
+#     which may map to the same category — easier entailment targets than a
+#     comma-separated list of four ideas;
+#   - an explicit news template ("This news article is about {}.");
+#   - multi_label=True: every label gets its own entailment-vs-contradiction
+#     probability, instead of a softmax that forces 12 labels to share 1.0
+#     (with softmax, ANY single label rarely clears a fixed threshold).
+HYPOTHESIS_TEMPLATE = "This news article is about {}."
+CLASSIFY_MULTI_LABEL = True
 
 _LABEL_TO_CATEGORY: dict[str, str] = {
-    "about cricket, the IPL, or a cricket match or tournament":                             "cricket",
-    "about Indian politics, elections, parliament, or government policy":                   "politics",
-    "about business, the economy, stock markets, or corporate finance":                     "business",
-    "about Bollywood, movies, music, entertainment, or Indian celebrities":                 "entertainment",
-    "about technology, software, artificial intelligence, or tech startups":                "technology",
-    "about sports other than cricket, such as football, hockey, kabaddi, or athletics":     "sports",
-    "about health, medicine, hospitals, disease, or public healthcare":                     "health",
-    "about education, schools, colleges, university exams, or student affairs":             "education",
-    "about crime, police, courts, arrests, or legal investigations":                        "crime",
-    "about the environment, climate change, floods, droughts, or pollution":                "environment",
-    "about international relations, foreign affairs, or events outside India":              "world",
-    "about cryptocurrency, bitcoin, blockchain, or digital currency":                       "crypto",
+    "cricket":                "cricket",
+    "politics":               "politics",
+    "business":               "business",
+    "economy":                "business",
+    "stock market":           "business",
+    "entertainment":          "entertainment",
+    "movies":                 "entertainment",
+    "technology":             "technology",
+    "sports":                 "sports",
+    "health":                 "health",
+    "education":              "education",
+    "crime":                  "crime",
+    "law and courts":         "crime",
+    "environment":            "environment",
+    "weather":                "environment",
+    "international news":     "world",
+    "war":                    "world",
+    "cryptocurrency":         "crypto",
 }
+_CANDIDATE_LABELS = list(_LABEL_TO_CATEGORY)
+
+
+# Cricket is a sub-type of sports. Scored independently, "sports" almost always
+# edges out "cricket" on a cricket story (e.g. sports 0.96 / cricket 0.54 for an
+# Irani Cup report), so the more specific label wins whenever it is itself
+# confidently entailed.
+CRICKET_SUBTYPE_MIN = 0.5
+
+
+def pick_category(scores: dict[str, float]) -> str:
+    """
+    Decide the category from per-label entailment scores (pure, unit-tested).
+
+      best label below CLASSIFY_CONFIDENCE_THRESHOLD → "general"
+      best category "sports" and cricket ≥ CRICKET_SUBTYPE_MIN → "cricket"
+    """
+    if not scores:
+        return "general"
+    best_label = max(scores, key=scores.get)
+    if scores[best_label] < CLASSIFY_CONFIDENCE_THRESHOLD:
+        return "general"
+    category = _LABEL_TO_CATEGORY.get(best_label, "general")
+    if category == "sports" and scores.get("cricket", 0.0) >= CRICKET_SUBTYPE_MIN:
+        return "cricket"
+    return category
+
+
+# Text the classifier sees: headline + description, or headline + the body lead
+# when the description is missing / repeats the headline — the same builder the
+# clustering embeddings use. Measured on production articles (2 CPU threads,
+# category + tags): headline+description+500 body chars 15.4 s/article →
+# headline+description 8.4 s, and 5.5 s with batched passes. The 66.2 % accuracy
+# was measured on headline+description (68.1 % with this exact builder), so
+# the faster input is also the validated one; NLI cost grows with every token of premise × every label.
+CLASSIFY_MAX_CHARS = 600
+# Hypothesis pairs scored per forward pass. 32 vs 1: 5.5 s vs 8.4 s per article.
+CLASSIFY_BATCH_SIZE = 32
+
+
+def _classification_text(title: str, description: str, full_text: str) -> str:
+    """Headline + description (or body lead), ≤ CLASSIFY_MAX_CHARS; "" if nothing."""
+    from enrichment.steps.embedding import build_embedding_text
+    return build_embedding_text(title, description, full_text, max_chars=CLASSIFY_MAX_CHARS)
 
 
 def classify_article(
@@ -149,8 +194,7 @@ def classify_article(
     # Title carries the strongest signal; description and start of full_text
     # add context.  We use up to ~1500 chars which stays well within mDeBERTa's
     # 512-token limit for English/Hindi (~4 chars/token on average).
-    body_prefix = (full_text or "").strip()[:500]
-    text = f"{title}. {description} {body_prefix}".strip()
+    text = _classification_text(title, description, full_text)
 
     if not text:
         return "general"
@@ -158,24 +202,16 @@ def classify_article(
     try:
         clf = _get_pipeline()
         result = clf(
-            text[:1500],
+            text,
             candidate_labels=_CANDIDATE_LABELS,
-            multi_label=False,
+            hypothesis_template=HYPOTHESIS_TEMPLATE,
+            multi_label=CLASSIFY_MULTI_LABEL,
+            batch_size=CLASSIFY_BATCH_SIZE,
         )
 
-        best_label = result["labels"][0]
-        best_score = result["scores"][0]
-
-        log.debug(
-            "classify: '%s...' → %s (score=%.2f)",
-            title[:50], _LABEL_TO_CATEGORY.get(best_label, "general"), best_score,
-        )
-
-        if best_score < CLASSIFY_CONFIDENCE_THRESHOLD:
-            log.debug("Low confidence (%.2f) → defaulting to 'general'", best_score)
-            return "general"
-
-        return _LABEL_TO_CATEGORY.get(best_label, "general")
+        category = pick_category(dict(zip(result["labels"], result["scores"])))
+        log.debug("classify: '%s...' → %s", (title or "")[:50], category)
+        return category
 
     except Exception as e:
         log.warning("Classification failed (%s) — returning 'general'", e)
@@ -261,8 +297,7 @@ def classify_tags(
       List of tag strings, e.g. ["government", "monetary policy", "economic policy"]
       Returns empty list on error or low-confidence articles.
     """
-    body_prefix = (full_text or "").strip()[:500]
-    text = f"{title}. {description} {body_prefix}".strip()
+    text = _classification_text(title, description, full_text)
 
     if not text:
         return []
@@ -270,9 +305,10 @@ def classify_tags(
     try:
         clf = _get_pipeline()
         result = clf(
-            text[:1500],
+            text,
             candidate_labels=_TAG_CANDIDATE_LABELS,
             multi_label=True,   # independent sigmoid score per tag
+            batch_size=CLASSIFY_BATCH_SIZE,
         )
 
         tags: list[str] = []
