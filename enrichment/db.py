@@ -122,6 +122,7 @@ def _run_with_retry(operation):
 # ─────────────────────────────────────────────────────────────────────────────
 
 _PAGE_SIZE = 1000   # Supabase PostgREST hard limit per request
+_ENTITY_CHUNK = 33  # articles per entity lookup: 33 × ≤30 entities < 1000 rows
 
 
 def fetch_unenriched_batch(limit: int, offset: int = 0) -> list[dict]:
@@ -486,26 +487,27 @@ def assign_cluster_batch(items: list[dict], shared: dict) -> list[dict] | None:
 
 
 def fetch_entities_for_articles(article_ids: list) -> dict:
-    """{article_id: [entity dicts]} from article_entities, for backfill."""
+    """
+    {article_id: [entity dicts]} from article_entities.
+
+    Chunks of 33 articles, ONE request each, no ORDER BY / paging: NER stores at
+    most 30 entities per article, so a chunk returns ≤ 990 rows (< PostgREST's
+    1000 cap). The earlier `IN (…200 ids…) ORDER BY article_id LIMIT 1000`
+    form let the planner walk the whole 2.9M-row article_id index looking for
+    matches — and brand-new articles have none — so it hit the 20 s timeout in
+    the first production clustering run.
+    """
     out: dict = {aid: [] for aid in article_ids}
-    for i in range(0, len(article_ids), 200):
-        chunk = article_ids[i:i + 200]
-        offset = 0
-        while True:
-            resp = _run_with_retry(lambda: (
-                get_client().table(TABLE_ENTITIES)
-                .select("article_id, entity_text, entity_type, salience")
-                .in_("article_id", chunk)
-                .order("article_id")
-                .range(offset, offset + _PAGE_SIZE - 1)
-                .execute()
-            ))
-            rows = resp.data or []
-            for r in rows:
-                out.setdefault(r["article_id"], []).append(r)
-            if len(rows) < _PAGE_SIZE:
-                break
-            offset += _PAGE_SIZE
+    for i in range(0, len(article_ids), _ENTITY_CHUNK):
+        chunk = article_ids[i:i + _ENTITY_CHUNK]
+        resp = _run_with_retry(lambda: (
+            get_client().table(TABLE_ENTITIES)
+            .select("article_id, entity_text, entity_type, salience")
+            .in_("article_id", chunk)
+            .execute()
+        ))
+        for r in resp.data or []:
+            out.setdefault(r["article_id"], []).append(r)
     return out
 
 

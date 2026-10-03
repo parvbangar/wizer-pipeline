@@ -402,3 +402,37 @@ class TestDbQueue:
     def test_queue_depth_failure_is_none(self, client):
         client({"wizer_enrichment_queue_depth": RuntimeError("down")})
         assert db.queue_depth() is None
+
+
+
+class TestEntityLookup:
+
+    def test_chunks_of_33_without_order_or_paging(self, monkeypatch):
+        """Production incident: IN(200 ids) + ORDER BY + LIMIT walked the whole index."""
+        calls = []
+
+        class Q:
+            def __init__(self):
+                self.ids = None
+
+            def select(self, *a):
+                return self
+
+            def in_(self, col, ids):
+                self.ids = list(ids)
+                return self
+
+            def order(self, *a, **k):
+                raise AssertionError("no ORDER BY: it defeats the article_id index")
+
+            def range(self, *a):
+                raise AssertionError("no paging needed: a chunk is < 1000 rows")
+
+            def execute(self):
+                calls.append(len(self.ids))
+                return type("R", (), {"data": [{"article_id": i, "entity_text": "X"} for i in self.ids]})()
+
+        monkeypatch.setattr(db, "get_client", lambda: type("C", (), {"table": lambda self, n: Q()})())
+        out = db.fetch_entities_for_articles(list(range(100)))
+        assert calls == [33, 33, 33, 1]
+        assert len(out) == 100 and out[5] == [{"article_id": 5, "entity_text": "X"}]
