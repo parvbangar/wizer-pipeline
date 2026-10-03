@@ -604,6 +604,45 @@ def load_recent_simhashes(limit: int = 10000) -> set[int]:
         return set()
 
 
+_HASH_CHUNK = 150   # url_hash values per IN (...) lookup — keeps the URL short
+
+
+def existing_hashes(hashes: Iterable[int]) -> set[int]:
+    """
+    Which of these url_hash values are already stored — ONE indexed lookup per
+    chunk of _HASH_CHUNK hashes.
+
+    The poller calls this once per feed with the hashes of the feed's CURRENT
+    entries (new + legacy normalisation). It replaced:
+      - load_recent_hashes(): the feed's last 2,000 url_hashes — 2,000 random
+        heap reads per feed, ~2.7M per breaking_news pass, which saturated the
+        production Micro instance's disk I/O on 2026-10-03; and
+      - url_hash_exists() per entry: one round trip per RSS item.
+    production stores url_hash as char(32) (space-padded); values are parsed
+    back to int. Fails open (empty set) — the UNIQUE index is the final guard.
+    """
+    wanted = sorted({int(h) for h in hashes})
+    found: set[int] = set()
+    for i in range(0, len(wanted), _HASH_CHUNK):
+        chunk = wanted[i:i + _HASH_CHUNK]
+        try:
+            resp = _retry(lambda: (
+                get_client().table(TABLE_ARTICLES)
+                .select(ART_COL_URL_HASH)
+                .in_(ART_COL_URL_HASH, chunk)
+                .execute()
+            ))
+        except Exception as e:
+            log.warning("existing_hashes lookup failed (%d hashes): %s - failing open", len(chunk), e)
+            continue
+        for r in resp.data or []:
+            try:
+                found.add(int(str(r[ART_COL_URL_HASH]).strip()))
+            except (TypeError, ValueError):
+                pass
+    return found
+
+
 def url_hash_exists(url_hash: int | Iterable[int]) -> bool:
     """
     Check the database if an article with this url_hash - or ANY of several

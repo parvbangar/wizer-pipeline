@@ -581,3 +581,32 @@ class TestClientPerThread:
         with pytest.raises(ValueError):
             db._retry(op)
         assert len(calls) == 1
+
+
+
+class TestExistingHashes:
+
+    def test_chunks_and_parses_padded_char_hashes(self, monkeypatch):
+        """Production url_hash is char(32): values come back space-padded strings."""
+        calls = []
+
+        class Q:
+            def select(self, *a):
+                return self
+
+            def in_(self, col, vals):
+                self.vals = list(vals)
+                calls.append(len(self.vals))
+                return self
+
+            def execute(self):
+                return type("R", (), {"data": [{"url_hash": f"{v:<32}"} for v in self.vals if v % 2 == 0]})()
+
+        monkeypatch.setattr(db, "get_client", lambda: type("C", (), {"table": lambda self, n: Q()})())
+        found = db.existing_hashes(range(-10, 300))
+        assert calls == [150, 150, 10]
+        assert found == {v for v in range(-10, 300) if v % 2 == 0}
+
+    def test_lookup_failure_fails_open(self, monkeypatch):
+        monkeypatch.setattr(db, "get_client", lambda: (_ for _ in ()).throw(ValueError("down")))
+        assert db.existing_hashes([1, 2]) == set()

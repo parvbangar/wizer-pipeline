@@ -175,8 +175,7 @@ class Recorder:
 @pytest.fixture
 def rec(monkeypatch):
     r = Recorder()
-    monkeypatch.setattr(db, "load_recent_hashes", lambda feed_id: set())
-    monkeypatch.setattr(db, "url_hash_exists", lambda hashes: False)
+    monkeypatch.setattr(db, "existing_hashes", lambda hashes: set())
     monkeypatch.setattr(
         db, "update_feed_after_poll",
         lambda *a, **k: r.feed_updates.append((a, k)),
@@ -387,39 +386,36 @@ class TestEntryErrors:
 
 class TestLegacyHashTransition:
 
-    def test_db_check_gets_both_hashes_in_one_call(self, rec, monkeypatch):
+    def test_one_batched_db_lookup_per_feed_with_both_hashes(self, rec, monkeypatch):
+        """All entries' new + legacy hashes in ONE lookup (no per-entry queries)."""
         from pipeline.dedup import url_hash, legacy_url_hash
         calls = []
-        monkeypatch.setattr(db, "url_hash_exists", lambda hashes: calls.append(hashes) or False)
+        monkeypatch.setattr(db, "existing_hashes", lambda hashes: calls.append(set(hashes)) or set())
+        urls = ["http://s.example/a?sid=7", "https://s.example/b"]
         monkeypatch.setattr(poller, "_fetch_rss_blocking",
-                            lambda url: ([{"title": "T", "link": "http://s.example/a?sid=7"}], {}, None))
+                            lambda url: ([{"title": f"T{i}", "link": u} for i, u in enumerate(urls)], {}, None))
         monkeypatch.setattr(poller, "crawl_article", _fake_crawl)
-        _poll(_feed())
-        url = "http://s.example/a?sid=7"
+        assert _poll(_feed())["new"] == 2
         assert len(calls) == 1
-        assert sorted(calls[0]) == sorted({url_hash(url), legacy_url_hash(url)})
+        assert calls[0] == {f(u) for u in urls for f in (url_hash, legacy_url_hash)}
 
     def test_article_stored_under_legacy_hash_is_not_reingested(self, rec, monkeypatch):
         from pipeline.dedup import legacy_url_hash
         legacy = legacy_url_hash("http://s.example/a")
-        monkeypatch.setattr(db, "url_hash_exists", lambda hashes: legacy in set(hashes))
+        monkeypatch.setattr(db, "existing_hashes", lambda hashes: {legacy} & set(hashes))
         monkeypatch.setattr(poller, "_fetch_rss_blocking",
                             lambda url: ([{"title": "T", "link": "http://s.example/a"}], {}, None))
         monkeypatch.setattr(poller, "crawl_article", _fake_crawl)
         res = _poll(_feed())
         assert res["new"] == 0 and res["exact_dups"] == 1
 
-    def test_in_memory_set_honours_legacy_hash(self, rec, monkeypatch):
-        from pipeline.dedup import legacy_url_hash
-        legacy = legacy_url_hash("http://s.example/a")
-        monkeypatch.setattr(db, "load_recent_hashes", lambda fid: {legacy})
-        called = []
-        monkeypatch.setattr(db, "url_hash_exists", lambda h: called.append(h) or False)
-        monkeypatch.setattr(poller, "_fetch_rss_blocking",
-                            lambda url: ([{"title": "T", "link": "http://s.example/a"}], {}, None))
+    def test_duplicate_entries_within_one_feed_insert_once(self, rec, monkeypatch):
+        monkeypatch.setattr(poller, "_fetch_rss_blocking", lambda url: (
+            [{"title": "T", "link": "https://s.example/a"}, {"title": "T again", "link": "https://s.example/a?utm_source=x"}],
+            {}, None))
         monkeypatch.setattr(poller, "crawl_article", _fake_crawl)
-        assert _poll(_feed())["new"] == 0
-        assert called == []                      # short-circuited in memory
+        res = _poll(_feed())
+        assert res["new"] == 1 and res["exact_dups"] == 1
 
     def test_only_new_hash_is_stored_and_http_url_preserved_for_fetching(self, rec, monkeypatch):
         from pipeline.dedup import url_hash

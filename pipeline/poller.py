@@ -257,6 +257,19 @@ def _has_http_scheme(url: str) -> bool:
     """Case-insensitive http(s):// check ("HTTP://x.com" is valid)."""
     return url[:7].lower() == "http://" or url[:8].lower() == "https://"
 
+def _entry_hash_candidates(entries: list) -> set[int]:
+    """Every url_hash (new + legacy normalisation) of a feed's entries."""
+    out: set[int] = set()
+    for entry in entries:
+        raw_url = (entry.get("link") or entry.get("id") or "").strip()
+        if not raw_url or not _has_http_scheme(raw_url):
+            continue
+        out.add(url_hash(raw_url))
+        if LEGACY_URL_HASH_CHECK:
+            out.add(legacy_url_hash(raw_url))
+    return out
+
+
 async def _process_one_entry(
     entry:        dict,           # feedparser entry
     feed:         dict,           # feed DB row
@@ -291,19 +304,14 @@ async def _process_one_entry(
     legacy_h  = legacy_url_hash(raw_url) if LEGACY_URL_HASH_CHECK else h
     candidates = {h, legacy_h}
 
-    # ── LAYER 1: EXACT DEDUP (in-memory hash check) ─────────────────────────
+    # ── EXACT DEDUP ─────────────────────────────────────────────────────────
     if seen_hashes & candidates:
-        log.debug("EXACT DUP (memory): %s", norm)
-        return None   # Already seen this URL in this poll cycle
+        log.debug("EXACT DUP: %s", norm)
+        return None   # stored already, or seen earlier in this poll
 
-    # ── LAYER 2: EXACT DEDUP (database check) ───────────────────────────────
-    # This is authoritative — checks against ALL articles ever stored.
-    # ONE query covers both hashes (.in_()).
-    exists = await loop.run_in_executor(None, db.url_hash_exists, sorted(candidates))
-    if exists:
-        seen_hashes.update(candidates)   # remember for the rest of the poll
-        log.debug("EXACT DUP (DB): %s", norm)
-        return None
+    # (The database check happened up front for the whole feed:
+    #  poll_one_feed seeds seen_hashes with db.existing_hashes(), so this one
+    #  set test covers both "already stored" and "seen earlier in this poll".)
 
     # Mark as seen for the rest of this poll cycle (only the NEW hash is stored)
     seen_hashes.add(h)
@@ -371,12 +379,6 @@ async def poll_one_feed(
         t0 = time.perf_counter()
         log.info("POLLING [%s] %s", cadence, feed_url)
 
-        # ── WARM THE IN-MEMORY DEDUP CACHE ───────────────────────────────────
-        # Load recent url_hashes for THIS feed into a Python set
-        seen_hashes: set[int] = await loop.run_in_executor(
-            None, db.load_recent_hashes, feed_id
-        )
-
         # ── FETCH AND PARSE THE RSS FEED ─────────────────────────────────────
         # The blocking fetch enforces its own socket timeout and wall-clock
         # deadline, but a thread can still wedge in places urllib can't bound
@@ -407,6 +409,15 @@ async def poll_one_feed(
             return {"new": 0, "duplicates": 0, "errors": 1, "skipped": False}
 
         log.debug("  %d entries from %s", len(entries), feed_url)
+
+        # ── EXACT DEDUP AGAINST THE DATABASE — one batched lookup ────────────
+        # Hash every entry (new + legacy normalisation) and ask the DB which of
+        # those hashes exist, in ONE indexed IN (...) lookup per 150 hashes.
+        # (Previously: load the feed's last 2,000 hashes + one query per entry
+        #  — see db.existing_hashes for why that was replaced.)
+        seen_hashes: set[int] = await loop.run_in_executor(
+            None, db.existing_hashes, _entry_hash_candidates(entries)
+        )
 
         # ── PROCESS ALL ENTRIES CONCURRENTLY ─────────────────────────────────
         tasks = [
