@@ -13,7 +13,6 @@ WHAT ARE UNIT TESTS?
   These tests don't connect to Supabase or make any network requests.
 """
 
-import pytest
 from datetime import datetime, timezone, timedelta
 
 

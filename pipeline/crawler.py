@@ -28,7 +28,12 @@ FETCH STRATEGIES (tried in order until one returns usable HTML)
                        published).
 
   Each strategy is retried up to MAX_FETCH_RETRIES times with exponential
-  backoff before moving on to the next strategy.
+  backoff before moving on to the next strategy.  Permanent client errors
+  (4xx except 408/429) are NOT retried - a 403/404/410 will not change in 2 s.
+  The whole fetch has an overall wall-clock deadline
+  (CRAWL_ARTICLE_DEADLINE_SECONDS), and after CRAWL_DOMAIN_FAIL_THRESHOLD
+  consecutive total failures for one domain the rest of that domain's articles
+  in the run skip HTTP entirely and keep their RSS-only text.
 
 TEXT EXTRACTION (tried in order, returns the longest result ≥ 200 chars)
 ─────────────────────────────────────────────────────────────────────────
@@ -55,6 +60,7 @@ import html as html_module
 import json
 import logging
 import re
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -64,7 +70,10 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
+from pipeline.dedup import simhash
 from pipeline.config import (
+    CRAWL_ARTICLE_DEADLINE_SECONDS,
+    CRAWL_DOMAIN_FAIL_THRESHOLD,
     PAYWALLED_DOMAINS,
     CRAWL_TIMEOUT_SECONDS,
     MAX_ARTICLE_BODY_CHARS,
@@ -136,8 +145,14 @@ class CrawledArticle:
     propensity_score: float | None = None
 
     def to_db_row(self) -> dict:
-        """Convert to a dict matching the articles table schema exactly."""
-        return {
+        """
+        Convert to a dict matching the articles table schema exactly.
+
+        Every text value (including nested og_tags) has NUL bytes removed:
+        PostgreSQL text/jsonb cannot store the NUL character and rejects the
+        WHOLE batch insert if any single row contains one.
+        """
+        return _strip_nul({
             "feed_id":        self.feed_id,
             "url":            self.url,
             "url_hash":       self.url_hash,
@@ -163,7 +178,18 @@ class CrawledArticle:
             "publisher_name": self.publisher_name,
             "iab_tier1":      self.iab_tier1,
             "iab_tier2":      self.iab_tier2,
-        }
+        })
+
+
+def _strip_nul(value: Any) -> Any:
+    """Recursively remove NUL characters from strings inside dicts/lists."""
+    if isinstance(value, str):
+        return value.replace("\x00", "") if "\x00" in value else value
+    if isinstance(value, dict):
+        return {_strip_nul(k): _strip_nul(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_strip_nul(v) for v in value]
+    return value
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -198,14 +224,33 @@ def is_paywalled(url: str, db_has_paywall: bool = False) -> bool:
 # HTML FETCHING — LAYER 1: SINGLE REQUEST
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _fetch_html(
+class _FetchOutcome:
+    """Result of one HTTP attempt: the HTML (or None) and the HTTP status."""
+    __slots__ = ("html", "status")
+
+    def __init__(self, html: str | None, status: int | None = None) -> None:
+        self.html = html
+        self.status = status       # HTTP status on HTTPError, else None
+
+
+def _is_permanent_status(status: int | None) -> bool:
+    """
+    True for client errors that retrying cannot fix: any 4xx except
+    408 (Request Timeout) and 429 (Too Many Requests), which are transient.
+    """
+    return status is not None and 400 <= status < 500 and status not in (408, 429)
+
+
+def _fetch_html_outcome(
     url: str,
     ua: str = USER_AGENT,
     extra_headers: dict | None = None,
-) -> str | None:
+    timeout: float | None = None,
+) -> _FetchOutcome:
     """
     Fetch raw HTML for a URL using the given user agent.
-    Returns the HTML string, or None on any failure.
+    Never raises; the outcome carries the HTTP status for HTTP errors so the
+    caller can decide whether a retry is worthwhile.
     Reads up to 3 MB to handle long-form articles.
     """
     headers = {
@@ -219,21 +264,90 @@ def _fetch_html(
 
     request = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=CRAWL_TIMEOUT_SECONDS) as resp:
+        with urllib.request.urlopen(
+            request, timeout=timeout if timeout else CRAWL_TIMEOUT_SECONDS
+        ) as resp:
             content_type = resp.headers.get("Content-Type", "")
             if not any(t in content_type for t in ("html", "xml", "text")):
                 log.debug("Skipping non-HTML content-type '%s' at %s", content_type, url)
-                return None
-            return resp.read(3 * 1024 * 1024).decode("utf-8", errors="replace")
+                return _FetchOutcome(None)
+            return _FetchOutcome(resp.read(3 * 1024 * 1024).decode("utf-8", errors="replace"))
     except urllib.error.HTTPError as e:
         log.debug("HTTP %d fetching %s", e.code, url)
-        return None
+        return _FetchOutcome(None, e.code)
     except urllib.error.URLError as e:
         log.debug("URL error fetching %s: %s", url, e.reason)
-        return None
+        return _FetchOutcome(None)
     except Exception as e:
         log.debug("Fetch error %s: %s", url, type(e).__name__)
-        return None
+        return _FetchOutcome(None)
+
+
+def _fetch_html(
+    url: str,
+    ua: str = USER_AGENT,
+    extra_headers: dict | None = None,
+    timeout: float | None = None,
+) -> str | None:
+    """Fetch raw HTML; returns the HTML string, or None on any failure."""
+    return _fetch_html_outcome(url, ua, extra_headers, timeout).html
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PER-RUN, PER-DOMAIN FAIL-FAST
+#
+# Crawls run concurrently in executor threads, so all state is guarded by a lock.
+# "Hard failure" = EVERY fetch strategy failed for one article of that domain.
+# After CRAWL_DOMAIN_FAIL_THRESHOLD consecutive hard failures the domain is
+# "tripped": for the rest of the run crawl_article() skips HTTP for it and
+# stores the RSS-derived metadata/text only (is_crawled stays False, so a later
+# recrawl can still retry).  Any success resets the streak.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class DomainFailureTracker:
+    """Thread-safe consecutive-failure counter keyed by domain."""
+
+    def __init__(self, threshold: int) -> None:
+        self._threshold = threshold
+        self._lock = threading.Lock()
+        self._streak: dict[str, int] = {}
+        self._tripped: set[str] = set()
+
+    def is_tripped(self, domain: str) -> bool:
+        if not domain or self._threshold <= 0:
+            return False
+        with self._lock:
+            return domain in self._tripped
+
+    def record(self, domain: str, success: bool) -> None:
+        if not domain or self._threshold <= 0:
+            return
+        with self._lock:
+            if success:
+                self._streak[domain] = 0
+                return
+            n = self._streak.get(domain, 0) + 1
+            self._streak[domain] = n
+            if n >= self._threshold and domain not in self._tripped:
+                self._tripped.add(domain)
+                log.warning(
+                    "DOMAIN FAIL-FAST: %s failed %d consecutive articles - "
+                    "skipping HTTP for it for the rest of this run",
+                    domain, n,
+                )
+
+    def reset(self) -> None:
+        with self._lock:
+            self._streak.clear()
+            self._tripped.clear()
+
+
+_domain_failures = DomainFailureTracker(CRAWL_DOMAIN_FAIL_THRESHOLD)
+
+
+def reset_domain_failures() -> None:
+    """Forget all per-domain failure state (called at the start of each run)."""
+    _domain_failures.reset()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -245,7 +359,27 @@ def _is_useful_html(html: str | None) -> bool:
     return bool(html) and len(html) > 500
 
 
-def _try_amp_url(url: str) -> str | None:
+def _remaining(deadline_at: float | None) -> float | None:
+    """Seconds left before the monotonic `deadline_at` (None = no deadline)."""
+    if deadline_at is None:
+        return None
+    return deadline_at - time.monotonic()
+
+
+def _request_timeout(deadline_at: float | None, base: float) -> float | None:
+    """
+    Per-request timeout: `base`, shrunk so it can't overrun the article
+    deadline.  Returns None when the deadline has already passed.
+    """
+    left = _remaining(deadline_at)
+    if left is None:
+        return base
+    if left <= 0.5:
+        return None
+    return min(base, left)
+
+
+def _try_amp_url(url: str, deadline_at: float | None = None) -> str | None:
     """
     Try common AMP URL patterns.  AMP pages are server-rendered, lightweight,
     and often served without paywalls.
@@ -267,15 +401,18 @@ def _try_amp_url(url: str) -> str | None:
     for amp_url in amp_variants:
         if amp_url == url:          # don't retry the exact same URL
             continue
-        html = _fetch_html(amp_url, ua=USER_AGENT)
-        if _is_useful_html(html):
+        timeout = _request_timeout(deadline_at, CRAWL_TIMEOUT_SECONDS)
+        if timeout is None:
+            return None            # article deadline reached
+        outcome = _fetch_html_outcome(amp_url, ua=USER_AGENT, timeout=timeout)
+        if _is_useful_html(outcome.html):
             log.debug("AMP fetch succeeded: %s", amp_url)
-            return html
+            return outcome.html
 
     return None
 
 
-def _try_wayback_machine(url: str) -> str | None:
+def _try_wayback_machine(url: str, deadline_at: float | None = None) -> str | None:
     """
     Check archive.org for the most recent public snapshot of this URL.
 
@@ -290,12 +427,15 @@ def _try_wayback_machine(url: str) -> str | None:
         "https://archive.org/wayback/available?url="
         + urllib.parse.quote(url, safe="")
     )
+    api_timeout = _request_timeout(deadline_at, ARCHIVE_ORG_TIMEOUT)
+    if api_timeout is None:
+        return None                # article deadline reached
     try:
         req = urllib.request.Request(
             api_url,
             headers={"User-Agent": USER_AGENT},
         )
-        with urllib.request.urlopen(req, timeout=ARCHIVE_ORG_TIMEOUT) as resp:
+        with urllib.request.urlopen(req, timeout=api_timeout) as resp:
             data    = json.loads(resp.read())
             closest = data.get("archived_snapshots", {}).get("closest", {})
             if not closest.get("available"):
@@ -304,31 +444,49 @@ def _try_wayback_machine(url: str) -> str | None:
             if not snapshot_url:
                 return None
             log.debug("Wayback snapshot found: %s", snapshot_url)
-            return _fetch_html(snapshot_url, ua=USER_AGENT)
+            snap_timeout = _request_timeout(deadline_at, CRAWL_TIMEOUT_SECONDS)
+            if snap_timeout is None:
+                return None
+            return _fetch_html(snapshot_url, ua=USER_AGENT, timeout=snap_timeout)
     except Exception as e:
         log.debug("Wayback Machine lookup failed for %s: %s", url, e)
         return None
 
 
-def _fetch_with_fallbacks(url: str, paywalled: bool = False) -> tuple[str | None, str]:
+def _fetch_with_fallbacks(
+    url: str,
+    paywalled: bool = False,
+    deadline_seconds: float | None = None,
+) -> tuple[str | None, str]:
     """
     Try every fetch strategy in order until one returns usable HTML.
 
     Strategy order:
-      1. Default UA        — skip if article is known-paywalled (saves time)
-      2. Googlebot UA      — bypasses most soft paywalls
-      3. AMP URL variants  — paywall-free lightweight versions
-      4. Wayback Machine   — archived snapshot
+      1. Default UA        - skip if article is known-paywalled (saves time)
+      2. Googlebot UA      - bypasses most soft paywalls
+      3. AMP URL variants  - paywall-free lightweight versions
+      4. Wayback Machine   - archived snapshot
 
     Each network strategy is retried up to MAX_FETCH_RETRIES times with
-    exponential backoff (1s → 2s → 4s) before moving to the next strategy.
+    exponential backoff (1s -> 2s -> 4s) before moving to the next strategy,
+    EXCEPT that a permanent 4xx (anything but 408/429) is not retried: it moves
+    straight on to the next strategy (403 may well work with the Googlebot UA),
+    and 404/410 skip the remaining same-URL user-agent strategies altogether.
+
+    The whole function is bounded by `deadline_seconds`
+    (default CRAWL_ARTICLE_DEADLINE_SECONDS; 0/None-config disables): per-request
+    timeouts and backoff sleeps are clamped to the time left.
 
     Returns (html, strategy_name) where strategy_name is one of:
       "default", "googlebot", "amp", "wayback", "failed"
     """
+    if deadline_seconds is None:
+        deadline_seconds = CRAWL_ARTICLE_DEADLINE_SECONDS
+    deadline_at = (time.monotonic() + deadline_seconds) if deadline_seconds and deadline_seconds > 0 else None
+
     ua_strategies = []
 
-    # Skip default UA for known paywalled sites — it'll just waste time
+    # Skip default UA for known paywalled sites - it'll just waste time
     if not paywalled:
         ua_strategies.append(("default", USER_AGENT, {}))
 
@@ -337,22 +495,39 @@ def _fetch_with_fallbacks(url: str, paywalled: bool = False) -> tuple[str | None
         ("googlebot", GOOGLEBOT_UA, {"X-Forwarded-For": "66.249.66.1"})
     )
 
+    gone = False   # saw 404/410 - the page itself is gone
     for name, ua, extra in ua_strategies:
+        if gone:
+            break
         for attempt in range(MAX_FETCH_RETRIES):
-            html = _fetch_html(url, ua=ua, extra_headers=extra or None)
-            if _is_useful_html(html):
+            timeout = _request_timeout(deadline_at, CRAWL_TIMEOUT_SECONDS)
+            if timeout is None:
+                log.debug("Article deadline reached before %s attempt: %s", name, url[:80])
+                return None, "failed"
+            outcome = _fetch_html_outcome(url, ua=ua, extra_headers=extra or None, timeout=timeout)
+            if _is_useful_html(outcome.html):
                 log.debug("Fetched via %s (attempt %d): %s", name, attempt + 1, url[:80])
-                return html, name
+                return outcome.html, name
+            if _is_permanent_status(outcome.status):
+                log.debug("Permanent HTTP %s via %s - not retrying: %s",
+                          outcome.status, name, url[:80])
+                gone = outcome.status in (404, 410)
+                break
             if attempt < MAX_FETCH_RETRIES - 1:
-                time.sleep(RETRY_DELAY_SECONDS * (2 ** attempt))
+                delay = RETRY_DELAY_SECONDS * (2 ** attempt)
+                left = _remaining(deadline_at)
+                if left is not None:
+                    delay = min(delay, max(left - 0.5, 0))
+                if delay > 0:
+                    time.sleep(delay)
 
     # AMP fallback
-    html = _try_amp_url(url)
+    html = _try_amp_url(url, deadline_at)
     if _is_useful_html(html):
         return html, "amp"
 
-    # Wayback Machine — last resort
-    html = _try_wayback_machine(url)
+    # Wayback Machine - last resort
+    html = _try_wayback_machine(url, deadline_at)
     if _is_useful_html(html):
         return html, "wayback"
 
@@ -419,6 +594,9 @@ def _extract_jsonld(html: str) -> dict[str, Any]:
     """
     Extract structured data from JSON-LD <script> blocks.
     Prefers NewsArticle / Article / BlogPosting types.
+
+    Robust to the shapes seen in the wild: a single object, a list of objects
+    (items may be non-dicts), and an object wrapping everything in "@graph".
     """
     for block in re.findall(
         r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
@@ -426,13 +604,20 @@ def _extract_jsonld(html: str) -> dict[str, Any]:
     ):
         try:
             data = json.loads(block.strip())
-            if isinstance(data, list):
-                data = data[0]
-            type_val = data.get("@type", "")
-            if any(t in str(type_val) for t in ("Article", "BlogPosting", "NewsArticle")):
-                return data
-        except (json.JSONDecodeError, IndexError, KeyError):
+        except (json.JSONDecodeError, ValueError):
             continue
+
+        candidates: list = data if isinstance(data, list) else [data]
+        for item in list(candidates):
+            if isinstance(item, dict) and isinstance(item.get("@graph"), list):
+                candidates.extend(item["@graph"])
+
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue            # e.g. a list whose first element is a string
+            type_val = item.get("@type", "")
+            if any(t in str(type_val) for t in ("Article", "BlogPosting", "NewsArticle")):
+                return item
     return {}
 
 
@@ -490,8 +675,31 @@ def _extract_video_metadata(html: str, og: dict) -> list[dict]:
     return videos
 
 
+def _as_utc(dt: datetime) -> datetime:
+    """Make a datetime timezone-aware: naive values are assumed to be UTC."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _parse_iso_date(value: Any) -> datetime | None:
+    """Parse an ISO-8601 string into an aware datetime; None for anything else."""
+    if not isinstance(value, str) or not value.strip():
+        return None          # JSON-LD can hold dicts / ints / lists here
+    try:
+        return _as_utc(datetime.fromisoformat(value.strip().replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+
 def _extract_publish_date(entry: dict, og: dict, jsonld: dict) -> datetime | None:
-    """Extract publication date from multiple sources, best-first."""
+    """
+    Extract publication date from multiple sources, best-first.
+
+    ALWAYS returns a timezone-aware datetime (naive inputs such as
+    "2024-02-01" or "2024-02-01T10:00:00" are treated as UTC), so callers can
+    compare it with the aware crawled_at without a TypeError.
+    """
     import calendar, email.utils
 
     for key in ("published_parsed", "updated_parsed", "created_parsed"):
@@ -502,25 +710,19 @@ def _extract_publish_date(entry: dict, og: dict, jsonld: dict) -> datetime | Non
             except Exception:
                 pass
 
-    date_str = jsonld.get("datePublished") or jsonld.get("dateCreated")
-    if date_str:
-        try:
-            return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-        except ValueError:
-            pass
-
-    og_time = og.get("article:published_time")
-    if og_time:
-        try:
-            return datetime.fromisoformat(og_time.replace("Z", "+00:00"))
-        except ValueError:
-            pass
+    for raw in (jsonld.get("datePublished"), jsonld.get("dateCreated"),
+                og.get("article:published_time")):
+        parsed = _parse_iso_date(raw)
+        if parsed:
+            return parsed
 
     for key in ("published", "updated"):
         s = entry.get(key)
-        if s:
+        if s and isinstance(s, str):
             try:
-                return email.utils.parsedate_to_datetime(s).astimezone(timezone.utc)
+                # parsedate_to_datetime returns a NAIVE value for "-0000";
+                # astimezone() on a naive value would assume local time.
+                return _as_utc(email.utils.parsedate_to_datetime(s)).astimezone(timezone.utc)
             except Exception:
                 pass
 
@@ -551,6 +753,68 @@ def _extract_author(entry: dict, og: dict, jsonld: dict) -> str:
             return v.strip()
 
     return ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IMAGE SELECTION
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _jsonld_image(jsonld: dict) -> str:
+    """
+    Image URL from a JSON-LD "image" property, which may be a string, an
+    ImageObject dict ({"url": ...} / {"contentUrl": ...}), or a list of either.
+    """
+    def one(v: Any) -> str:
+        if isinstance(v, str):
+            return v.strip()
+        if isinstance(v, dict):
+            for k in ("url", "contentUrl"):
+                u = v.get(k)
+                if isinstance(u, str) and u.strip():
+                    return u.strip()
+        return ""
+
+    img = jsonld.get("image")
+    if isinstance(img, list):
+        for item in img:
+            u = one(item)
+            if u:
+                return u
+        return ""
+    return one(img)
+
+
+_IMG_TAG_RE = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
+_IMG_SKIP_RE = re.compile(r"(logo|icon|sprite|pixel|spacer|avatar|blank|1x1)", re.IGNORECASE)
+
+
+def _first_img(html: str, base_url: str) -> str:
+    """First <img> whose src looks like a real photo (documented last resort)."""
+    for m in _IMG_TAG_RE.finditer(html):
+        src = m.group(1).strip()
+        if not src or src.startswith("data:") or _IMG_SKIP_RE.search(src):
+            continue
+        if not re.search(r"\.(jpe?g|png|webp|gif)(\?|$)", src, re.IGNORECASE):
+            continue
+        return urllib.parse.urljoin(base_url, src)
+    return ""
+
+
+def _pick_image(og: dict, jsonld: dict, rss_image: str, html: str, base_url: str) -> str:
+    """
+    Choose the article image in the documented priority order:
+      og:image -> JSON-LD image -> RSS image -> first <img>.
+
+    (A mis-parenthesised `a or b and c if cond else d or e` expression used to
+    discard og:image whenever JSON-LD had no image dict.)
+    """
+    return (
+        og.get("og:image")
+        or _jsonld_image(jsonld)
+        or rss_image
+        or _first_img(html, base_url)
+        or ""
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -924,6 +1188,7 @@ def crawl_article(
     """
     db_has_paywall = bool(feed.get("has_paywall", False))
     paywalled      = is_paywalled(norm_url, db_has_paywall)
+    domain_key     = _extract_domain(norm_url)
 
     if paywalled:
         log.debug("PAYWALLED — trying Googlebot/AMP/Wayback: %s", norm_url)
@@ -964,7 +1229,14 @@ def crawl_article(
         return article
 
     # ── STEP 3: Fetch the page (all strategies) ───────────────────────────────
-    html, strategy = _fetch_with_fallbacks(norm_url, paywalled=paywalled)
+    # Per-run domain fail-fast: once a domain has failed N articles in a row,
+    # stop hammering it (and burning worker-thread time) and keep RSS text.
+    if _domain_failures.is_tripped(domain_key):
+        log.debug("Domain %s tripped - skipping HTTP, RSS-only: %s", domain_key, norm_url)
+        html, strategy = None, "failed"
+    else:
+        html, strategy = _fetch_with_fallbacks(norm_url, paywalled=paywalled)
+        _domain_failures.record(domain_key, success=html is not None)
 
     if html is None:
         # Every strategy failed — store with RSS metadata only
@@ -985,13 +1257,26 @@ def crawl_article(
     full_text = _best_fulltext(html, norm_url)
 
     # Merge metadata — crawled page beats RSS data
-    article.title        = html_module.unescape(og.get("og:title") or jsonld.get("headline") or rss_title)
-    article.description  = og.get("og:description") or jsonld.get("description") or rss_description
-    article.top_image_url = (
-        og.get("og:image")
-        or (jsonld.get("image") or {}).get("url", "") if isinstance(jsonld.get("image"), dict) else ""
-        or rss_image
+    # TITLE: the RSS title is canonical.  title_simhash is computed from it
+    # BEFORE the crawl (so the near-dup check works for every entry, including
+    # ones whose crawl fails) and og:title usually carries a " | Site Name"
+    # suffix that would break cross-publisher near-dup matching.  Storing the
+    # same string the simhash was computed from keeps title and title_simhash
+    # consistent.  og:title / JSON-LD headline are only used when the feed gave
+    # no title at all, and then the simhash is recomputed from that title.
+    # (The raw og:title is still preserved inside og_tags.)
+    if not rss_title:
+        fallback_title = html_module.unescape(og.get("og:title") or jsonld.get("headline") or "")
+        if isinstance(fallback_title, str) and fallback_title.strip():
+            article.title = fallback_title.strip()
+            article.title_simhash = simhash(article.title)
+    jl_headline_desc = jsonld.get("description")
+    article.description  = (
+        og.get("og:description")
+        or (jl_headline_desc if isinstance(jl_headline_desc, str) else "")
+        or rss_description
     )
+    article.top_image_url = _pick_image(og, jsonld, rss_image, html, norm_url)
     article.author       = _extract_author(rss_entry, og, jsonld) or rss_author
     article.published_at = _extract_publish_date(rss_entry, og, jsonld)
     # Cap future-dated articles. Some feeds (e.g. ESPN India) set published_at

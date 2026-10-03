@@ -12,7 +12,7 @@ HOW TO RUN:
   # Test it first — no database writes
   python main.py --dry-run --verbose
 
-  # Poll only breaking news feeds (runs every 30 min in CI)
+  # Poll only breaking news feeds (runs hourly in CI)
   python main.py --cadence breaking_news
 
   # Poll daily feeds
@@ -32,11 +32,11 @@ WHAT HAPPENS WHEN YOU RUN IT:
   5. For each article: deduplicates, crawls, inserts to articles table
   6. Updates feed state (last_polled_at, fail_count, etc.)
   7. Writes a summary row to pipeline_runs
-  8. Exits with code 0 (success) or 1 (crash)
+  8. Exits with code 0 (success) or 1 (crash / feeds could not be loaded)
 
 EXIT CODES:
   0 = completed successfully (even with some feed errors — that's normal)
-  1 = pipeline crashed (DB unreachable, config missing, etc.)
+  1 = pipeline crashed (DB unreachable -> db.FeedLoadError, config missing, etc.)
 """
 
 import argparse
@@ -81,12 +81,12 @@ def main() -> None:
         epilog="""
 Examples:
   python main.py --dry-run --verbose              Test without writing to DB
-  python main.py --cadence breaking_news          Poll live news feeds (30 min cycle)
+  python main.py --cadence breaking_news          Poll live news feeds (hourly cycle)
   python main.py --cadence multiple_daily         Poll high-frequency feeds (3 hr cycle)
   python main.py --cadence daily                  Poll daily feeds (12 hr cycle)
-  python main.py --cadence several_weekly         Poll semi-weekly feeds (2 day cycle)
-  python main.py --cadence weekly                 Poll weekly feeds (7 day cycle)
-  python main.py --cadence monthly                Poll monthly feeds (30 day cycle)
+  python main.py --cadence several_weekly         Poll semi-weekly feeds (daily cycle)
+  python main.py --cadence weekly                 Poll weekly feeds (daily cycle)
+  python main.py --cadence monthly                Poll monthly feeds (daily cycle)
   python main.py --cadence unknown                Poll unclassified feeds (12 hr cycle)
   python main.py                                  Poll ALL due feeds
         """,
@@ -149,6 +149,8 @@ Examples:
         log.info("Stopped by user (Ctrl+C)")
         sys.exit(0)
     except Exception as e:
+        # Includes db.FeedLoadError: a Supabase outage while loading feeds must
+        # fail the job (exit 1), not look like a successful empty run.
         log.exception("Pipeline crashed: %s", e)
         sys.exit(1)
 

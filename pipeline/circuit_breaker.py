@@ -32,15 +32,21 @@ THE TWO CIRCUITS WE MONITOR:
   │  If a feed hasn't produced ANY new articles in 30 days, it's dead.  │
   │  Common causes: site shut down, URL changed, behind paywall now.    │
   │                                                                     │
-  │  We still poll dormant feeds once/week (they might come back).      │
-  │  After 30 more days of nothing → is_active=False permanently.       │
+  │  Dormant feeds are is_active=False with disabled_reason='dormant'.  │
+  │  db.get_due_feeds() re-polls them once per                          │
+  │  DORMANT_RECHECK_INTERVAL_DAYS (7).  If a re-poll inserts a new     │
+  │  article the feed is re-activated automatically; otherwise it stays │
+  │  dormant and is retried a week later.  (Error-disabled feeds carry  │
+  │  disabled_reason='errors' and are NEVER auto re-polled.)            │
   │                                                                     │
-  │  Reset: Same as above — manually re-enable in Supabase.             │
+  │  Reset: UPDATE feeds SET is_active=True, fail_count=0,              │
+  │         disabled_reason=NULL WHERE id='...';                        │
   └─────────────────────────────────────────────────────────────────────┘
 
 STATE FLOW:
-  active  →  (5 errors)      →  is_active=False  [ERROR_DISABLED]
-  active  →  (30 days empty) →  is_active=False  [DORMANT]
+  active  →  (5 errors)      →  is_active=False, disabled_reason='errors'  [ERROR_DISABLED]
+  active  →  (30 days empty) →  is_active=False, disabled_reason='dormant' [DORMANT]
+  dormant →  (weekly re-poll finds an article) →  active   [automatic]
   is_active=False  →  (manual reset)  →  active
 """
 
@@ -53,6 +59,8 @@ from pipeline.config import (
     MAX_ERRORS_BEFORE_DISABLE,
     DORMANCY_DAYS,
     DORMANT_RECHECK_INTERVAL_DAYS,
+    FEED_COL_CREATED, FEED_COL_LAST_NEW, FEED_COL_DISABLED_REASON,
+    DISABLED_DORMANT,
 )
 
 log = logging.getLogger(__name__)
@@ -76,14 +84,14 @@ def check_dormancy(
     """
     if last_new_article_at is None:
         # Never found any articles — give it a grace period
-        feed_created_str = feed.get("created_at")
+        feed_created_str = feed.get(FEED_COL_CREATED)
         if not feed_created_str:
             return False, ""
 
         try:
-            feed_created = datetime.fromisoformat(
-                feed_created_str.replace("Z", "+00:00")
-            )
+            feed_created = _parse_ts(feed_created_str)
+            if feed_created is None:
+                return False, ""
             age_days = (datetime.now(timezone.utc) - feed_created).days
             if age_days >= DORMANCY_DAYS:
                 return True, f"No articles found in {age_days} days since creation"
@@ -104,42 +112,80 @@ def check_dormancy(
     return False, ""
 
 
+def _parse_ts(value) -> datetime | None:
+    """Parse an ISO timestamp from PostgREST; naive values are treated as UTC."""
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+def is_dormant_feed(feed: dict) -> bool:
+    """True for a feed parked by the dormancy circuit (NOT error-disabled)."""
+    return (
+        not feed.get("is_active", True)
+        and feed.get(FEED_COL_DISABLED_REASON) == DISABLED_DORMANT
+    )
+
+
 def should_skip_feed(feed: dict) -> tuple[bool, str]:
     """
     Decide whether to skip this feed in the current poll cycle.
 
     A feed is skipped when:
-      - is_active=False (disabled by error streak or dormancy)
-
-    Note: We already filter is_active=True in db.get_due_feeds().
-    This function is an extra guard for edge cases.
+      - is_active=False (disabled by error streak or dormancy) …
+      - … EXCEPT a dormant feed that db.get_due_feeds() selected for its
+        weekly re-check (it tags those with feed["_dormant_recheck"]=True).
+        Error-disabled feeds are never re-checked.
 
     Returns:
       (should_skip, reason)
     """
     if not feed.get("is_active", True):
+        if feed.get("_dormant_recheck") and is_dormant_feed(feed):
+            return False, ""
         return True, "Feed is marked inactive (is_active=False)"
 
     return False, ""
 
 
+def dormant_recheck_due(feed: dict, now: datetime | None = None) -> bool:
+    """
+    True if a dormant feed has gone DORMANT_RECHECK_INTERVAL_DAYS since its
+    last poll and should be re-polled once.
+    """
+    now = now or datetime.now(timezone.utc)
+    last = _parse_ts(feed.get("last_polled_at"))
+    if last is None:
+        return True
+    return (now - last) >= timedelta(days=DORMANT_RECHECK_INTERVAL_DAYS)
+
+
 def get_last_new_article_date(feed: dict) -> datetime | None:
     """
-    Extract the date when this feed last produced a new article.
+    Extract the date when this feed last produced a NEW article.
 
-    We use last_success_at as a proxy — this is set whenever a poll
-    finds new articles.  It's the closest column in your schema to
-    "when did we last get fresh content from this feed".
+    Reads feeds.last_new_article_at, which db.update_feed_after_poll only
+    advances when a poll inserts >0 articles.  (We deliberately do NOT use
+    last_success_at: it advances on every successful fetch, even an empty one,
+    so a feed that has been silent for months would never look stale.)
 
-    Returns None if the feed has never successfully provided articles.
+    Returns None if the feed has never produced an article, or if the column
+    is absent (see has_new_article_tracking()).
     """
-    last_success_str = feed.get("last_success_at")
-    if not last_success_str:
-        return None
-    try:
-        return datetime.fromisoformat(last_success_str.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return None
+    return _parse_ts(feed.get(FEED_COL_LAST_NEW))
+
+
+def has_new_article_tracking(feed: dict) -> bool:
+    """
+    True if the feed row carries the last_new_article_at column at all.
+    When the column hasn't been migrated, dormancy detection must be skipped:
+    there is no trustworthy "last new article" signal to judge by.
+    """
+    return FEED_COL_LAST_NEW in feed
 
 
 def log_circuit_state(feed_id: str, feed_url: str, fail_count: int) -> None:

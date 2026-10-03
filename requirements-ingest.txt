@@ -1,0 +1,25 @@
+# Layer 1 (ingestion) runtime dependencies ONLY.
+# Used by the ingest_*.yml workflows so polling jobs don't install the
+# Layer 2 ML stack (torch / spaCy / transformers / sentence-transformers ...).
+# Versions are pinned to match requirements.txt - keep the two in sync.
+#
+# Derived from the imports in main.py, push_feeds.py and pipeline/*.py:
+#   feedparser           pipeline/poller.py
+#   supabase             pipeline/db.py, push_feeds.py
+#   python-dotenv        pipeline/config.py, push_feeds.py
+#   mmh3                 pipeline/dedup.py (falls back to hashlib if absent,
+#                        but url_hash values would then NOT match stored ones)
+#   trafilatura          pipeline/crawler.py (lazy import)
+#   readability-lxml     pipeline/crawler.py (lazy import)
+#   newspaper3k          pipeline/crawler.py (lazy import)
+#   beautifulsoup4+lxml  pipeline/crawler.py (lazy import)
+
+feedparser==6.0.11
+trafilatura==1.12.2
+readability-lxml==0.8.1
+newspaper3k==0.2.8
+beautifulsoup4==4.12.3
+lxml==5.3.0
+supabase==2.10.0
+mmh3==4.1.0
+python-dotenv==1.0.1

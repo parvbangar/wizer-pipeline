@@ -20,13 +20,16 @@ IMPORTANT: This module uses YOUR exact column names from your schema.
                          iab_tier1, iab_tier2, has_paywall, is_active,
                          poll_interval_mins, priority_score, fail_count,
                          last_polled_at, last_success_at, articles_found
+  OPTIONAL feeds columns (docs/ingestion_fixes_migration.sql; code degrades
+  gracefully if absent): created_at, last_new_article_at, disabled_reason
   articles columns used: all columns from your schema
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from typing import Callable, Iterable
 
 from pipeline.config import (
     SUPABASE_URL, SUPABASE_KEY,
@@ -36,6 +39,10 @@ from pipeline.config import (
     FEED_COL_IAB1, FEED_COL_IAB2, FEED_COL_HAS_PAYWALL, FEED_COL_IS_ACTIVE,
     FEED_COL_POLL_INTERVAL, FEED_COL_PRIORITY, FEED_COL_FAIL_COUNT,
     FEED_COL_LAST_POLLED, FEED_COL_LAST_SUCCESS, FEED_COL_ARTICLES_FOUND,
+    FEED_COL_LAST_NEW, FEED_COL_DISABLED_REASON,
+    FEED_OPTIONAL_COLS, DISABLED_DORMANT, DISABLED_ERRORS,
+    LANGUAGE_NAMES, FEED_DUE_TOLERANCE, DB_PAGE_SIZE,
+    DORMANT_RECHECK_INTERVAL_DAYS,
     ART_COL_URL_HASH, ART_COL_FEED_ID, ART_COL_CRAWLED,
     CADENCE_POLL_INTERVALS,
     ARTICLE_HARD_LIMIT, ARTICLE_PRUNE_TARGET,
@@ -83,14 +90,133 @@ def get_client():
 # FEEDS: READING
 # ─────────────────────────────────────────────────────────────────────────────
 
+class FeedLoadError(RuntimeError):
+    """Raised when the list of feeds cannot be loaded from the database.
+
+    get_due_feeds() used to swallow DB errors and return [], which made a
+    Supabase outage indistinguishable from "no feeds due" - the run exited 0.
+    Raising lets main.py exit 1 so the GitHub Actions job goes red.
+    """
+
+
+def _is_missing_column_error(exc: Exception, columns: Iterable[str]) -> bool:
+    """True if a PostgREST/Postgres error says one of `columns` doesn't exist."""
+    text = str(exc)
+    looks_missing = (
+        "42703" in text or "PGRST204" in text or "does not exist" in text
+        or "Could not find" in text
+    )
+    return looks_missing and any(c in text for c in columns)
+
+
+def _paginate(
+    make_query: Callable[[], object],
+    limit: int | None = None,
+    page_size: int = DB_PAGE_SIZE,
+) -> list[dict]:
+    """
+    Read ALL rows of a query in `page_size` pages using .range().
+
+    WHY?  PostgREST silently caps every response at max_rows (1000 on
+    Supabase), whatever .limit() says.  A single .limit(10000) therefore
+    returned at most 1000 rows with no error.
+
+    `make_query` must return a FRESH query builder each call (builders are
+    mutated by .range()) and should include a deterministic ORDER BY so pages
+    don't overlap or skip rows.
+    `limit` stops early once that many rows have been collected.
+    """
+    rows: list[dict] = []
+    offset = 0
+    while limit is None or len(rows) < limit:
+        want = page_size if limit is None else min(page_size, limit - len(rows))
+        resp = make_query().range(offset, offset + want - 1).execute()
+        page = resp.data or []
+        rows.extend(page)
+        if len(page) < want:
+            break          # short page = no more rows
+        offset += want
+    return rows
+
+
+_FEED_BASE_COLS = [
+    FEED_COL_ID, FEED_COL_URL, FEED_COL_FINAL_URL, FEED_COL_DOMAIN,
+    FEED_COL_PUBLISHER, FEED_COL_CADENCE, FEED_COL_LANGUAGE, FEED_COL_COUNTRY,
+    FEED_COL_IAB1, FEED_COL_IAB2, FEED_COL_HAS_PAYWALL, FEED_COL_POLL_INTERVAL,
+    FEED_COL_PRIORITY, FEED_COL_FAIL_COUNT, FEED_COL_LAST_POLLED,
+    FEED_COL_LAST_SUCCESS, FEED_COL_ARTICLES_FOUND,
+]
+
+
+def _select_feed_rows(
+    cadence: str | None,
+    is_active: bool,
+    extra_filter: Callable[[object], object] | None = None,
+) -> list[dict]:
+    """
+    Paginated SELECT of feeds with the right column list.
+
+    Tries the full column list (including the OPTIONAL columns created_at /
+    last_new_article_at / disabled_reason).  If the database says one of them
+    doesn't exist yet (migration not applied) it retries once without them,
+    so a missing migration degrades dormancy handling instead of killing the run.
+    """
+    client = get_client()
+
+    def build(cols: list[str]) -> Callable[[], object]:
+        def make():
+            q = (
+                client.table(TABLE_FEEDS)
+                .select(", ".join(cols))
+                .eq(FEED_COL_IS_ACTIVE, is_active)
+                # oldest polled first -> natural rotation; id breaks ties so
+                # pagination is stable
+                .order(FEED_COL_LAST_POLLED, desc=False, nullsfirst=True)
+                .order(FEED_COL_ID)
+            )
+            if cadence:
+                q = q.eq(FEED_COL_CADENCE, cadence)
+            if extra_filter:
+                q = extra_filter(q)
+            return q
+        return make
+
+    try:
+        return _paginate(build(_FEED_BASE_COLS + list(FEED_OPTIONAL_COLS)))
+    except Exception as e:
+        if not _is_missing_column_error(e, FEED_OPTIONAL_COLS):
+            raise
+        log.warning(
+            "feeds table lacks optional columns (%s) - run "
+            "docs/ingestion_fixes_migration.sql. Dormancy tracking disabled.", e,
+        )
+        return _paginate(build(_FEED_BASE_COLS))
+
+
+def _derive_language_name(feed: dict) -> None:
+    """
+    Fill feed["language_name"] (-> articles.language) from language_code.
+
+    feeds.language_name isn't guaranteed to exist, so it isn't selected (see
+    config.LANGUAGE_NAMES); previously the crawler read a key that was never
+    present, leaving articles.language empty on every row.
+    """
+    if feed.get("language_name"):
+        return
+    code = str(feed.get(FEED_COL_LANGUAGE) or "").lower().replace("_", "-").split("-")[0]
+    feed["language_name"] = LANGUAGE_NAMES.get(code, "")
+
+
 def get_due_feeds(cadence: str | None = None) -> list[dict]:
     """
     Return feeds that are due to be polled right now.
 
     A feed is "due" when:
-      - is_active = True (not manually paused or dormant)
-      - last_polled_at is NULL (never polled) OR
-        (now - last_polled_at) >= poll_interval_mins
+      - is_active = True and (last_polled_at is NULL OR
+        (now - last_polled_at) >= poll_interval_mins * FEED_DUE_TOLERANCE)
+      - OR it is DORMANT (is_active=False, disabled_reason='dormant') and
+        DORMANT_RECHECK_INTERVAL_DAYS have passed since its last poll.
+        Those rows are tagged feed["_dormant_recheck"]=True.
 
     If poll_interval_mins is NULL in the DB, we use the cadence default
     from CADENCE_POLL_INTERVALS.
@@ -98,60 +224,58 @@ def get_due_feeds(cadence: str | None = None) -> list[dict]:
     Args:
       cadence: If given, only return feeds with this update_cadence value.
                If None, return feeds from ALL cadences.
+
+    Raises:
+      FeedLoadError: the active-feed query failed.  (A failure of only the
+      dormant re-check query is logged and ignored - it must not block the
+      normal poll.)
     """
-    client = get_client()
-
-    # Build the SELECT columns list — exactly what we need, nothing more
-    select_cols = ", ".join([
-        FEED_COL_ID,
-        FEED_COL_URL,
-        FEED_COL_FINAL_URL,
-        FEED_COL_DOMAIN,
-        FEED_COL_PUBLISHER,
-        FEED_COL_CADENCE,
-        FEED_COL_LANGUAGE,
-        FEED_COL_COUNTRY,
-        FEED_COL_IAB1,
-        FEED_COL_IAB2,
-        FEED_COL_HAS_PAYWALL,
-        FEED_COL_POLL_INTERVAL,
-        FEED_COL_PRIORITY,
-        FEED_COL_FAIL_COUNT,
-        FEED_COL_LAST_POLLED,
-        FEED_COL_LAST_SUCCESS,
-        FEED_COL_ARTICLES_FOUND,
-    ])
-
     try:
-        query = (
-            client.table(TABLE_FEEDS)
-            .select(select_cols)
-            .eq(FEED_COL_IS_ACTIVE, True)
-            .order(FEED_COL_LAST_POLLED, desc=False, nullsfirst=True)  # oldest polled first → natural rotation
-            .limit(10000)
-        )
-        if cadence:
-            query = query.eq(FEED_COL_CADENCE, cadence)
-
-        resp = query.execute()
-        all_feeds = resp.data or []
-
-        # Filter in Python: feeds where enough time has passed since last poll
-        now = datetime.now(timezone.utc)
-        due = []
-        for feed in all_feeds:
-            if _is_feed_due(feed, now):
-                due.append(feed)
-
-        log.info(
-            "Found %d feeds due for polling (cadence=%s, total_active=%d)",
-            len(due), cadence or "all", len(all_feeds),
-        )
-        return due
-
+        all_feeds = _select_feed_rows(cadence, is_active=True)
     except Exception as e:
         log.error("get_due_feeds failed: %s", e)
-        return []
+        raise FeedLoadError(f"could not load feeds from Supabase: {e}") from e
+
+    now = datetime.now(timezone.utc)
+    due = [f for f in all_feeds if _is_feed_due(f, now)]
+
+    # -- Weekly re-check of dormant feeds ------------------------------------
+    dormant_due: list[dict] = []
+    try:
+        dormant = _select_feed_rows(
+            cadence, is_active=False,
+            extra_filter=lambda q: q.eq(FEED_COL_DISABLED_REASON, DISABLED_DORMANT),
+        )
+        cutoff = timedelta(days=DORMANT_RECHECK_INTERVAL_DAYS)
+        for f in dormant:
+            last = _parse_iso(f.get(FEED_COL_LAST_POLLED))
+            if last is None or (now - last) >= cutoff:
+                f["_dormant_recheck"] = True
+                dormant_due.append(f)
+    except Exception as e:
+        log.warning("dormant re-check query failed (%s) - skipping re-checks", e)
+
+    due.extend(dormant_due)
+    for f in due:
+        _derive_language_name(f)
+
+    log.info(
+        "Found %d feeds due for polling (cadence=%s, total_active=%d, "
+        "dormant_rechecks=%d)",
+        len(due), cadence or "all", len(all_feeds), len(dormant_due),
+    )
+    return due
+
+
+def _parse_iso(value) -> datetime | None:
+    """Parse a PostgREST timestamp; naive values are treated as UTC."""
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
 
 
 def _is_feed_due(feed: dict, now: datetime) -> bool:
@@ -159,20 +283,26 @@ def _is_feed_due(feed: dict, now: datetime) -> bool:
     Check if a feed is due for polling based on time elapsed since last poll.
 
     Logic:
-      - Never polled (last_polled_at is None) → always due
-      - Time since last poll >= interval → due
-      - Otherwise → not due yet
-    """
-    last_polled_str = feed.get(FEED_COL_LAST_POLLED)
-    if not last_polled_str:
-        return True   # Never polled → poll now
+      - Never polled (last_polled_at is None) -> always due
+      - Time since last poll >= interval * FEED_DUE_TOLERANCE -> due
+      - Otherwise -> not due yet
 
-    try:
-        last_polled = datetime.fromisoformat(
-            last_polled_str.replace("Z", "+00:00")
-        )
-    except (ValueError, AttributeError):
-        return True   # Can't parse timestamp → poll to be safe
+    WHY A TOLERANCE?
+      Each workflow's cron period equals the feed's poll interval (e.g. hourly
+      cron vs 60 min).  But last_polled_at is stamped when the feed FINISHES,
+      some minutes after its run started, so at the next run's start the
+      elapsed time is "interval minus a few minutes" - just under the
+      interval.  With a strict `elapsed >= interval` the feed was skipped and
+      only polled on the run after, i.e. every 2 intervals.  Treating a feed as
+      due at 90 % of its interval (FEED_DUE_TOLERANCE, default 0.9) absorbs
+      run duration and GitHub-cron jitter.  Lower it if runs routinely take
+      more than ~10 % of the interval.
+    """
+    if not feed.get(FEED_COL_LAST_POLLED):
+        return True   # Never polled -> poll now
+    last_polled = _parse_iso(feed.get(FEED_COL_LAST_POLLED))
+    if last_polled is None:
+        return True   # Can't parse timestamp -> poll to be safe
 
     # Get the interval: prefer DB value, fall back to cadence default
     db_interval = feed.get(FEED_COL_POLL_INTERVAL)  # poll_interval_mins from DB
@@ -184,41 +314,72 @@ def _is_feed_due(feed: dict, now: datetime) -> bool:
         interval_minutes = CADENCE_POLL_INTERVALS.get(cadence, 720)
 
     elapsed_minutes = (now - last_polled).total_seconds() / 60
-    return elapsed_minutes >= interval_minutes
+    return elapsed_minutes >= interval_minutes * FEED_DUE_TOLERANCE
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FEEDS: WRITING (circuit breaker state updates)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _update_feed_row(feed_id: str, patch: dict) -> None:
+    """
+    UPDATE one feeds row, tolerating missing OPTIONAL columns.
+
+    If the DB rejects the patch because last_new_article_at / disabled_reason
+    don't exist yet, drop those keys and retry once so the essential state
+    (last_polled_at, fail_count, is_active ...) is still saved.
+    """
+    client = get_client()
+    try:
+        client.table(TABLE_FEEDS).update(patch).eq(FEED_COL_ID, feed_id).execute()
+    except Exception as e:
+        optional_in_patch = [c for c in FEED_OPTIONAL_COLS if c in patch]
+        if optional_in_patch and _is_missing_column_error(e, optional_in_patch):
+            log.warning(
+                "feeds update without optional columns %s (run "
+                "docs/ingestion_fixes_migration.sql): %s", optional_in_patch, e,
+            )
+            reduced = {k: v for k, v in patch.items() if k not in FEED_OPTIONAL_COLS}
+            client.table(TABLE_FEEDS).update(reduced).eq(FEED_COL_ID, feed_id).execute()
+        else:
+            raise
+
+
 def update_feed_after_poll(
     feed_id: str,
     success: bool,
     new_articles: int,
     error_msg: str = "",
+    reactivate: bool = False,
 ) -> None:
     """
     Update the feed row after a poll attempt.
 
     On SUCCESS:
       - last_polled_at = now
-      - last_success_at = now
+      - last_success_at = now   (= "the fetch worked", even with 0 new articles)
+      - last_new_article_at = now  ONLY if new_articles > 0
+        (this is the timestamp dormancy detection reads)
       - fail_count = 0  (reset the error counter)
       - articles_found += new_articles
+      - reactivate=True (a dormant re-check that found articles) also sets
+        is_active=True and clears disabled_reason
 
     On FAILURE:
-      - last_polled_at = now
+      - last_polled_at = now   (so a hung/failing feed doesn't jump the queue
+        again on the very next run)
       - fail_count += 1
-      - If fail_count reaches MAX_ERRORS: is_active = False (circuit open)
+      - If fail_count reaches MAX_ERRORS: is_active = False,
+        disabled_reason = 'errors' (circuit open)
 
     Args:
       feed_id:      The feed's UUID
       success:      True if the RSS fetch succeeded (even if 0 new articles)
       new_articles: Count of new articles inserted this poll
       error_msg:    Error description (for logging, not stored in DB)
+      reactivate:   Bring a dormant feed back to active (see above)
     """
     from pipeline.config import MAX_ERRORS_BEFORE_DISABLE
-    client = get_client()
     now = datetime.now(timezone.utc).isoformat()
 
     try:
@@ -233,9 +394,15 @@ def update_feed_after_poll(
                 # We read the current value and add to it
                 current = _get_feed_articles_found(feed_id)
                 patch[FEED_COL_ARTICLES_FOUND] = current + new_articles
+                patch[FEED_COL_LAST_NEW] = now
+            if reactivate:
+                patch[FEED_COL_IS_ACTIVE] = True
+                patch[FEED_COL_DISABLED_REASON] = None
+                log.info("REACTIVATED dormant feed %s (found %d new articles)",
+                         feed_id, new_articles)
 
         else:
-            # Failed poll — read current fail_count, increment it
+            # Failed poll - read current fail_count, increment it
             current_fails = _get_feed_fail_count(feed_id)
             new_fail_count = current_fails + 1
 
@@ -246,32 +413,37 @@ def update_feed_after_poll(
 
             if new_fail_count >= MAX_ERRORS_BEFORE_DISABLE:
                 patch[FEED_COL_IS_ACTIVE] = False
+                patch[FEED_COL_DISABLED_REASON] = DISABLED_ERRORS
                 log.warning(
                     "CIRCUIT OPEN: feed %s disabled after %d consecutive errors. "
                     "Last error: %s",
                     feed_id, new_fail_count, error_msg,
                 )
 
-        client.table(TABLE_FEEDS).update(patch).eq(FEED_COL_ID, feed_id).execute()
+        _update_feed_row(feed_id, patch)
 
     except Exception as e:
-        # Don't crash the pipeline if state update fails — just log
+        # Don't crash the pipeline if state update fails - just log
         log.error("update_feed_after_poll(%s) failed: %s", feed_id, e)
 
 
 def mark_feed_dormant(feed_id: str, reason: str) -> None:
     """
-    Mark a feed as dormant (is_active=False) due to prolonged inactivity.
+    Mark a feed as dormant (is_active=False, disabled_reason='dormant') due to
+    prolonged inactivity.
 
     Called by the circuit breaker when a feed hasn't produced new articles
-    in DORMANCY_DAYS days.  The feed can be re-activated manually in Supabase:
-      UPDATE feeds SET is_active=True, fail_count=0 WHERE id='...';
+    in DORMANCY_DAYS days.  Dormant feeds are re-polled once every
+    DORMANT_RECHECK_INTERVAL_DAYS by get_due_feeds() and re-activated
+    automatically if they produce an article.  Manual re-activation:
+      UPDATE feeds SET is_active=True, fail_count=0, disabled_reason=NULL
+      WHERE id='...';
     """
-    client = get_client()
     try:
-        client.table(TABLE_FEEDS).update({
+        _update_feed_row(feed_id, {
             FEED_COL_IS_ACTIVE: False,
-        }).eq(FEED_COL_ID, feed_id).execute()
+            FEED_COL_DISABLED_REASON: DISABLED_DORMANT,
+        })
         log.warning("DORMANT: feed %s marked inactive. Reason: %s", feed_id, reason)
     except Exception as e:
         log.error("mark_feed_dormant(%s) failed: %s", feed_id, e)
@@ -337,16 +509,18 @@ def load_recent_hashes(feed_id: str, limit: int = 2000) -> set[int]:
       Set lookup is O(1) — checking "is X in this set?" is instant.
     """
     try:
-        resp = (
-            get_client()
-            .table(TABLE_ARTICLES)
-            .select(ART_COL_URL_HASH)
-            .eq(ART_COL_FEED_ID, feed_id)
-            .order(ART_COL_CRAWLED, desc=True)
-            .limit(limit)
-            .execute()
+        client = get_client()
+        rows = _paginate(
+            lambda: (
+                client.table(TABLE_ARTICLES)
+                .select(ART_COL_URL_HASH)
+                .eq(ART_COL_FEED_ID, feed_id)
+                .order(ART_COL_CRAWLED, desc=True)
+                .order("id", desc=True)
+            ),
+            limit=limit,
         )
-        hashes = {row[ART_COL_URL_HASH] for row in (resp.data or [])}
+        hashes = {row[ART_COL_URL_HASH] for row in rows}
         log.debug("Loaded %d hashes for feed %s", len(hashes), feed_id)
         return hashes
     except Exception as e:
@@ -368,44 +542,55 @@ def load_recent_simhashes(limit: int = 10000) -> set[int]:
       of content across all your feeds.  Older stories shouldn't be compared.
     """
     try:
-        resp = (
-            get_client()
-            .table(TABLE_ARTICLES)
-            .select("title_simhash")
-            .not_.is_("title_simhash", "null")
-            .order(ART_COL_CRAWLED, desc=True)
-            .limit(limit)
-            .execute()
+        client = get_client()
+        # Paginated: PostgREST caps one response at max_rows (1000) so a bare
+        # .limit(10000) silently returned only the newest 1000 titles.
+        rows = _paginate(
+            lambda: (
+                client.table(TABLE_ARTICLES)
+                .select("title_simhash")
+                .not_.is_("title_simhash", "null")
+                .order(ART_COL_CRAWLED, desc=True)
+                .order("id", desc=True)
+            ),
+            limit=limit,
         )
-        return {row["title_simhash"] for row in (resp.data or [])}
+        return {row["title_simhash"] for row in rows}
     except Exception as e:
         log.warning("load_recent_simhashes failed: %s — using empty set", e)
         return set()
 
 
-def url_hash_exists(url_hash: int) -> bool:
+def url_hash_exists(url_hash: int | Iterable[int]) -> bool:
     """
-    Check the database if an article with this url_hash already exists.
+    Check the database if an article with this url_hash - or ANY of several
+    hashes - already exists.
+
+    Passing several hashes (new + legacy normalisation, see dedup.py) is done
+    with ONE .in_() query, not one query per hash.
 
     This is the AUTHORITATIVE check (layer 2 fallback after the in-memory check).
     It queries the UNIQUE index on articles.url_hash which makes it very fast.
 
     Returns True if the article already exists, False if it's new.
-    Fails open (returns False) on database errors — the UNIQUE constraint
+    Fails open (returns False) on database errors - the UNIQUE constraint
     will catch any actual duplicates at insert time.
     """
+    hashes = [url_hash] if isinstance(url_hash, int) else sorted(set(url_hash))
+    if not hashes:
+        return False
     try:
         resp = (
             get_client()
             .table(TABLE_ARTICLES)
             .select(ART_COL_URL_HASH, count="exact")
-            .eq(ART_COL_URL_HASH, url_hash)
+            .in_(ART_COL_URL_HASH, hashes)
             .limit(1)
             .execute()
         )
         return (resp.count or 0) > 0
     except Exception as e:
-        log.warning("url_hash_exists check failed: %s — failing open", e)
+        log.warning("url_hash_exists check failed: %s - failing open", e)
         return False   # fail open: the UNIQUE index is the last line of defence
 
 
@@ -429,7 +614,9 @@ def upsert_articles(rows: list[dict]) -> tuple[int, int]:
       rows: List of dicts, each matching the articles table schema exactly.
 
     Returns:
-      (inserted_count, duplicate_count) tuple
+      (inserted_count, duplicate_count) tuple.  Rows that FAILED for any reason
+      other than a conflict are in neither count (they are logged); callers can
+      derive them as len(rows) - inserted - duplicates.
     """
     if not rows:
         return 0, 0
@@ -452,18 +639,24 @@ def upsert_articles(rows: list[dict]) -> tuple[int, int]:
         # Fall back to individual inserts so partial batches aren't lost
         for row in rows:
             try:
-                client.table(TABLE_ARTICLES).upsert(
+                row_resp = client.table(TABLE_ARTICLES).upsert(
                     row,
                     on_conflict=ART_COL_URL_HASH,
                     ignore_duplicates=True,
                 ).execute()
-                inserted += 1
+                # With ignore_duplicates the response only contains rows that
+                # were actually inserted; a conflict-skipped row comes back
+                # empty.  (Counting every non-raising call as "inserted"
+                # inflated the stats.)
+                if row_resp.data:
+                    inserted += 1
+                else:
+                    duplicates += 1
             except Exception as row_e:
                 log.error(
                     "Row insert failed url=%s: %s",
                     row.get("url", "?"), row_e,
                 )
-                duplicates += 1
 
     return inserted, duplicates
 
@@ -477,9 +670,48 @@ def upsert_articles(rows: list[dict]) -> tuple[int, int]:
 #   2. log_run_finish() — called in a finally block at the END
 #                         Updates the row with final stats
 #
-# The cadence column may not exist in older DB schemas (migration Step 7).
-# We fall back to the tier column which has always been present.
+# Both `cadence` (new) and `tier` (legacy name of the same thing) are sent.
+# docs/migration.sql adds whichever is missing, but a deployment may still lack
+# either one, so _write_run_row() drops any column PostgREST reports as missing
+# and retries.
 # ─────────────────────────────────────────────────────────────────────────────
+
+_RUN_OPTIONAL_COLS = ("cadence", "tier")
+
+
+def _missing_run_column(exc: Exception, row: dict) -> str | None:
+    """Name of the optional column the error complains about, if any."""
+    text = str(exc)
+    if "PGRST204" not in text and "42703" not in text and "does not exist" not in text:
+        return None
+    for col in _RUN_OPTIONAL_COLS:
+        if col in row and col in text:
+            return col
+    return None
+
+
+def _write_run_row(write: Callable[[dict], object], payload: dict) -> bool:
+    """
+    Run `write(row)` (an insert or update) and, if the DB reports a missing
+    optional column, drop that column and retry.  Up to one retry per optional
+    column.  Returns True on success.  Other errors are logged and swallowed -
+    run logging must never crash the pipeline.
+    """
+    row = dict(payload)
+    for _ in range(len(_RUN_OPTIONAL_COLS) + 1):
+        try:
+            write(row)
+            return True
+        except Exception as e:
+            missing = _missing_run_column(e, row)
+            if missing:
+                log.debug("pipeline_runs.%s column missing - retrying without it", missing)
+                row.pop(missing)
+                continue
+            log.error("pipeline_runs write FAILED: %s", e)
+            return False
+    return False
+
 
 def log_run_start(cadence: str | None, dry_run: bool) -> str | None:
     """
@@ -491,6 +723,7 @@ def log_run_start(cadence: str | None, dry_run: bool) -> str | None:
     cadence_val = cadence or "all"
     payload = {
         "tier":            cadence_val,
+        "cadence":         cadence_val,
         "feeds_attempted": 0,
         "feeds_skipped":   0,
         "new_articles":    0,
@@ -500,21 +733,17 @@ def log_run_start(cadence: str | None, dry_run: bool) -> str | None:
         "duration_s":      0.0,
         "dry_run":         dry_run,
     }
-    for attempt in range(2):
-        try:
-            row = dict(payload)
-            if attempt == 0:
-                row["cadence"] = cadence_val
-            resp = client.table(TABLE_RUNS).insert(row).execute()
-            run_id = (resp.data or [{}])[0].get("id")
-            log.info("pipeline_runs row created (id=%s, cadence=%s)", run_id, cadence_val)
-            return run_id
-        except Exception as e:
-            if attempt == 0 and "PGRST204" in str(e) and "cadence" in str(e):
-                log.debug("cadence column missing — retrying without it")
-                continue
-            log.error("log_run_start FAILED: %s", e)
-            return None
+    result: dict = {}
+
+    def write(row: dict) -> None:
+        resp = client.table(TABLE_RUNS).insert(row).execute()
+        result["id"] = (resp.data or [{}])[0].get("id")
+
+    if not _write_run_row(write, payload):
+        log.error("log_run_start FAILED")
+        return None
+    log.info("pipeline_runs row created (id=%s, cadence=%s)", result.get("id"), cadence_val)
+    return result.get("id")
 
 
 def log_run_finish(run_id: str | None, summary: dict) -> None:
@@ -526,6 +755,7 @@ def log_run_finish(run_id: str | None, summary: dict) -> None:
     cadence_val = summary.get("cadence", "all")
     payload = {
         "tier":            cadence_val,
+        "cadence":         cadence_val,
         "feeds_attempted": summary.get("feeds_attempted", 0),
         "feeds_skipped":   summary.get("feeds_skipped", 0),
         "new_articles":    summary.get("new_articles", 0),
@@ -535,26 +765,20 @@ def log_run_finish(run_id: str | None, summary: dict) -> None:
         "duration_s":      summary.get("duration_s", 0.0),
         "dry_run":         summary.get("dry_run", False),
     }
-    for attempt in range(2):
-        try:
-            row = dict(payload)
-            if attempt == 0:
-                row["cadence"] = cadence_val
-            if run_id:
-                client.table(TABLE_RUNS).update(row).eq("id", run_id).execute()
-            else:
-                client.table(TABLE_RUNS).insert(row).execute()
-            log.info(
-                "pipeline_runs updated — cadence=%s new=%d errors=%d duration=%.1fs",
-                cadence_val, payload["new_articles"], payload["errors"], payload["duration_s"],
-            )
-            return
-        except Exception as e:
-            if attempt == 0 and "PGRST204" in str(e) and "cadence" in str(e):
-                log.debug("cadence column missing — retrying without it")
-                continue
-            log.error("log_run_finish FAILED: %s", e)
-            return
+
+    def write(row: dict) -> None:
+        if run_id:
+            client.table(TABLE_RUNS).update(row).eq("id", run_id).execute()
+        else:
+            client.table(TABLE_RUNS).insert(row).execute()
+
+    if _write_run_row(write, payload):
+        log.info(
+            "pipeline_runs updated - cadence=%s new=%d errors=%d duration=%.1fs",
+            cadence_val, payload["new_articles"], payload["errors"], payload["duration_s"],
+        )
+    else:
+        log.error("log_run_finish FAILED")
 
 
 def log_run(summary: dict) -> None:
@@ -637,60 +861,46 @@ def update_article_crawl(
         return False
 
 
+_PRUNE_CHUNK = 50_000      # rows deleted per RPC call — keeps each statement short
+_PRUNE_MAX_CALLS = 100     # safety stop: at most 5M rows per pipeline run
+
+
 def prune_articles_if_needed() -> int:
     """
-    Delete the oldest articles if the table exceeds ARTICLE_HARD_LIMIT (500K).
-    Prunes down to ARTICLE_PRUNE_TARGET (490K) so this doesn't fire every run.
+    Delete the oldest articles once the table exceeds ARTICLE_HARD_LIMIT,
+    bringing it back down to ARTICLE_PRUNE_TARGET (so it doesn't fire every run).
+
+    Runs in the database (wizer_prune_articles, docs/ingestion_fixes_migration.sql),
+    walking the primary key in chunks of _PRUNE_CHUNK until the target is met.
+
+    WHY NOT IN PYTHON (the previous implementation):
+      It fetched the `excess` oldest ids through PostgREST, which caps every
+      response at max_rows (1000 on Supabase) — so above the hard limit each
+      run deleted at most 1000 rows while ingestion added far more, and the
+      table never came back under the limit. It also sorted the whole table by
+      the unindexed created_at column.
 
     Returns the number of articles deleted (0 if pruning was not needed).
-    Called once at the end of each pipeline run.
+    Never raises — a failed prune must not fail the ingestion run.
     """
+    if ARTICLE_HARD_LIMIT <= 0 or ARTICLE_PRUNE_TARGET <= 0:
+        return 0      # pruning disabled (default) — see pipeline/config.py
+    deleted = 0
     try:
-        # Step 1: Exact count (uses the primary key index — fast)
-        resp = (
-            get_client()
-            .table(TABLE_ARTICLES)
-            .select("id", count="exact")
-            .limit(1)
-            .execute()
-        )
-        total = resp.count or 0
-
-        if total <= ARTICLE_HARD_LIMIT:
-            log.debug("Article count %d — under %d limit, no pruning needed", total, ARTICLE_HARD_LIMIT)
-            return 0
-
-        excess = total - ARTICLE_PRUNE_TARGET
-        log.info(
-            "Article count %d exceeds %d — pruning %d oldest articles",
-            total, ARTICLE_HARD_LIMIT, excess,
-        )
-
-        # Step 2: Fetch IDs of the oldest articles by created_at
-        id_resp = (
-            get_client()
-            .table(TABLE_ARTICLES)
-            .select("id")
-            .order("created_at", desc=False)
-            .limit(excess)
-            .execute()
-        )
-        ids_to_delete = [row["id"] for row in (id_resp.data or [])]
-
-        if not ids_to_delete:
-            return 0
-
-        # Step 3: Delete in batches of 500 (safe PostgREST batch size)
-        deleted = 0
-        batch_size = 500
-        for i in range(0, len(ids_to_delete), batch_size):
-            batch = ids_to_delete[i:i + batch_size]
-            get_client().table(TABLE_ARTICLES).delete().in_("id", batch).execute()
-            deleted += len(batch)
-
-        log.info("Pruned %d articles — table now at ~%d rows", deleted, total - deleted)
+        for _ in range(_PRUNE_MAX_CALLS):
+            resp = get_client().rpc("wizer_prune_articles", {
+                "p_hard_limit": ARTICLE_HARD_LIMIT if deleted == 0 else ARTICLE_PRUNE_TARGET,
+                "p_target":     ARTICLE_PRUNE_TARGET,
+                "p_max_delete": _PRUNE_CHUNK,
+            }).execute()
+            n = int(resp.data or 0)
+            deleted += n
+            if n < _PRUNE_CHUNK:
+                break
+        if deleted:
+            log.info("Pruned %d oldest articles (target %d rows)", deleted, ARTICLE_PRUNE_TARGET)
         return deleted
-
     except Exception as e:
-        log.warning("prune_articles_if_needed failed: %s", e)
-        return 0
+        log.warning("prune_articles_if_needed failed after %d deletions "
+                    "(is docs/ingestion_fixes_migration.sql applied?): %s", deleted, e)
+        return deleted
