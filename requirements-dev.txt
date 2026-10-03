@@ -8,3 +8,6 @@ pytest==8.3.3
 # database is configured (WIZER_TEST_DSN).
 psycopg[binary]>=3.2
 numpy>=1.26
+
+# Article archive (archiver/) — Parquet writing in tests/test_archive.py
+pyarrow>=17.0

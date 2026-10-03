@@ -166,3 +166,79 @@ def install_into_enrichment_db(conn) -> None:
     }
     for name, fn in replacements.items():
         setattr(db, name, locked(fn))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# archiver.db over psycopg — same functions and return shapes, used by the SQL
+# integration tests to run archiver.runner.run_archive against real Postgres.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _jsonable(row: dict) -> dict:
+    """Make a psycopg row look like PostgREST JSON (ISO timestamps, str uuids)."""
+    import datetime as _dt
+    import decimal
+    import uuid as _uuid
+    out = {}
+    for k, v in row.items():
+        if isinstance(v, (_dt.datetime, _dt.date)):
+            v = v.isoformat()
+        elif isinstance(v, _uuid.UUID):
+            v = str(v)
+        elif isinstance(v, decimal.Decimal):
+            v = float(v)
+        out[k] = v
+    return out
+
+
+class PgArchiveDB:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def _rows(self, sql, params=()):
+        with self.conn.cursor(row_factory=dict_row) as cur:
+            rows = [_jsonable(r) for r in cur.execute(sql, params).fetchall()]
+        self.conn.commit()
+        return rows
+
+    def pending_days(self, hot_days):
+        import datetime as _dt
+        return [(_dt.date.fromisoformat(r["day"]), r["status"]) for r in
+                self._rows("SELECT * FROM wizer_archive_days(%s)", (hot_days,))]
+
+    def day_stats(self, day):
+        r = self._rows("SELECT * FROM wizer_archive_day_stats(%s)", (day,))[0]
+        return {"article_rows": int(r["article_rows"]), "min_id": r["min_id"], "max_id": r["max_id"]}
+
+    def article_page(self, day, after_id, limit=1000):
+        return self._rows("SELECT * FROM wizer_archive_page(%s, %s, %s)", (day, after_id, limit))
+
+    def entity_page(self, day, after_key, limit=1000):
+        return self._rows("SELECT * FROM wizer_archive_entities_page(%s, %s, %s)", (day, after_key, limit))
+
+    def clusters(self, day):
+        return self._rows("SELECT * FROM wizer_archive_clusters(%s)", (day,))
+
+    def get_log(self, day):
+        rows = self._rows("SELECT * FROM article_archive_log WHERE day = %s", (day,))
+        return rows[0] if rows else None
+
+    def upsert_log(self, row):
+        cols = list(row)
+        vals = [Jsonb(v) if k == "objects" else v for k, v in row.items()]
+        placeholders = ", ".join(["%s"] * len(cols))
+        updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c != "day")
+        self.conn.execute(
+            f"INSERT INTO article_archive_log ({', '.join(cols)}) VALUES ({placeholders}) "
+            f"ON CONFLICT (day) DO UPDATE SET {updates}", vals)
+        self.conn.commit()
+
+    def mark_verified(self, day):
+        self.conn.execute("UPDATE article_archive_log SET status = 'verified', verified_at = now() "
+                          "WHERE day = %s AND status = 'uploaded'", (day,))
+        self.conn.commit()
+
+    def prune_day(self, day, min_age_days, max_delete):
+        n = self.conn.execute("SELECT wizer_prune_archived_day(%s, %s, %s)",
+                              (day, min_age_days, max_delete)).fetchone()[0]
+        self.conn.commit()
+        return n

@@ -67,7 +67,7 @@ def database():
 @pytest.fixture
 def conn(database):
     c = psycopg.connect(database)
-    c.execute("TRUNCATE articles, article_clusters, article_entities, enrichment_runs RESTART IDENTITY CASCADE")
+    c.execute("TRUNCATE articles, article_clusters, article_entities, enrichment_runs, article_archive_log RESTART IDENTITY CASCADE")
     c.commit()
     yield c
     c.close()
@@ -746,3 +746,106 @@ class TestClusteringJob:
         assert rows[3]["cluster_id"] is None and "does not exist" in rows[3]["error"]
         again = postgrest_call(conn, "wizer_assign_cluster_batch", {"p_items": items[:1], **shared})
         assert again[0]["action"] == "existing"                                # idempotent
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Article archive (docs/archive_migration.sql + archiver/)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _old_articles(conn, day, n, with_entity=True):
+    ids = []
+    for i in range(n):
+        aid = conn.execute(
+            "INSERT INTO articles (url, url_hash, title, full_text, published_at, crawled_at, domain, "
+            "is_crawled, keywords) VALUES (%s, %s, %s, %s, %s, %s, 'x.com', true, %s::jsonb) RETURNING id",
+            (f"https://x.com/{uuid.uuid4()}", uuid.uuid4().int >> 65, f"old {i}", "body " * 50,
+             day, datetime.combine(day, datetime.min.time(), timezone.utc) + timedelta(hours=1, minutes=i),
+             '["k"]'),
+        ).fetchone()[0]
+        if with_entity:
+            conn.execute("INSERT INTO article_entities (article_id, entity_text, entity_type, salience) "
+                         "VALUES (%s, 'Modi', 'PERSON', 0.9)", (aid,))
+        ids.append(aid)
+    conn.commit()
+    return ids
+
+
+class TestArchiveSQL:
+    OLD = (datetime.now(timezone.utc) - timedelta(days=60)).date()
+
+    def _log(self, conn, status="verified", rows=3, pruned=0):
+        conn.execute("INSERT INTO article_archive_log (day, status, article_rows, bucket, pruned_rows) "
+                     "VALUES (%s, %s, %s, 'b', %s)", (self.OLD, status, rows, pruned))
+        conn.commit()
+
+    def test_days_listing_respects_hot_window(self, conn):
+        _old_articles(conn, self.OLD, 1)
+        add_article(conn)                                           # crawled now → hot
+        days = [r[0] for r in conn.execute("SELECT day FROM wizer_archive_days(30)").fetchall()]
+        assert days[0] == self.OLD
+        assert max(days) < (datetime.now(timezone.utc) - timedelta(days=30)).date()
+
+    def test_prune_refuses_unverified_day(self, conn):
+        _old_articles(conn, self.OLD, 3)
+        self._log(conn, status="uploaded")
+        with pytest.raises(psycopg.Error, match="not verified"):
+            conn.execute("SELECT wizer_prune_archived_day(%s, 30, 100)", (self.OLD,))
+        conn.rollback()
+        assert conn.execute("SELECT count(*) FROM articles").fetchone()[0] == 3
+
+    def test_prune_refuses_day_without_log(self, conn):
+        _old_articles(conn, self.OLD, 1)
+        with pytest.raises(psycopg.Error, match="no archive log"):
+            conn.execute("SELECT wizer_prune_archived_day(%s, 30, 100)", (self.OLD,))
+        conn.rollback()
+
+    def test_prune_refuses_hot_window(self, conn):
+        recent = datetime.now(timezone.utc).date() - timedelta(days=5)
+        conn.execute("INSERT INTO article_archive_log (day, status, article_rows, bucket) "
+                     "VALUES (%s, 'verified', 0, 'b')", (recent,))
+        conn.commit()
+        with pytest.raises(psycopg.Error, match="hot window"):
+            conn.execute("SELECT wizer_prune_archived_day(%s, 30, 100)", (recent,))
+        conn.rollback()
+
+    def test_prune_refuses_if_day_changed_since_export(self, conn):
+        _old_articles(conn, self.OLD, 4)
+        self._log(conn, rows=3)                                     # one row was never archived
+        with pytest.raises(psycopg.Error, match="changed since export"):
+            conn.execute("SELECT wizer_prune_archived_day(%s, 30, 100)", (self.OLD,))
+        conn.rollback()
+        assert conn.execute("SELECT count(*) FROM articles").fetchone()[0] == 4
+
+    def test_prune_chunks_cascades_entities_and_closes_day(self, conn):
+        _old_articles(conn, self.OLD, 5)
+        self._log(conn, rows=5)
+        assert conn.execute("SELECT wizer_prune_archived_day(%s, 30, 2)", (self.OLD,)).fetchone()[0] == 2
+        conn.commit()
+        assert conn.execute("SELECT status, pruned_rows FROM article_archive_log").fetchone() == ("verified", 2)
+        while conn.execute("SELECT wizer_prune_archived_day(%s, 30, 2)", (self.OLD,)).fetchone()[0]:
+            conn.commit()
+        conn.commit()
+        assert conn.execute("SELECT count(*) FROM articles").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM article_entities").fetchone()[0] == 0
+        assert conn.execute("SELECT status, pruned_rows FROM article_archive_log").fetchone() == ("pruned", 5)
+
+    def test_run_archive_end_to_end_on_real_sql(self, conn, monkeypatch):
+        """Full export → verify → prune through the real SQL, with an in-memory bucket."""
+        from archiver import runner
+        from archiver.parquet import parquet_ids
+        from tests.test_archive import FakeStore
+        from tools.pg_backend import PgArchiveDB
+        monkeypatch.setattr(runner, "PART_ROWS", 2)
+        monkeypatch.setattr(runner, "PAGE", 2)
+        ids = _old_articles(conn, self.OLD, 5)
+        hot = add_article(conn)                                     # inside the hot window: must survive
+        store = FakeStore()
+        rep = runner.run_archive(PgArchiveDB(conn), store, "b", hot_days=30)
+        assert not rep.failures and rep.rows_pruned == 5
+        archived = sorted(i for p, d in store.objects.items() if p.startswith("articles/")
+                          for i in parquet_ids(d))
+        assert archived == sorted(ids)
+        assert conn.execute("SELECT array_agg(id) FROM articles").fetchone()[0] == [hot]
+        status = conn.execute("SELECT status, article_rows, entity_rows FROM article_archive_log "
+                              "WHERE day = %s", (self.OLD,)).fetchone()
+        assert status == ("pruned", 5, 5)

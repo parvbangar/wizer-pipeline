@@ -1,0 +1,3 @@
+# Article archive job (.github/workflows/archive.yml): Supabase client + Parquet.
+-r requirements-ingest.txt
+pyarrow>=17.0

@@ -21,6 +21,7 @@ see the rollout section below for exactly which files to run there. The canonica
 | 9 | `cluster_index_migration.sql` | v1 clustering history (index) |
 | 10 | `propensity_migration.sql` | `propensity_score` column |
 | 11 | `clustering_v2_migration.sql` | **story clustering v2** (functions incl. the batched job feed, columns, indexes, views) |
+| 12 | `archive_migration.sql` | article archive: `article_archive_log`, export pages, verified-only `wizer_prune_archived_day()` |
 
 Files 6–9 are kept so the history replays cleanly on a fresh database. Their functions are
 not used any more. Two of them previously **could not be re-run**: each redefined
@@ -37,9 +38,9 @@ SELECT extversion FROM pg_extension WHERE extname = 'vector';   -- expect 0.8.x
 ```
 The v2 migration refuses to run on an older version and says why.
 
-**2. Apply the four new files**, in this order: `ingestion_fixes_migration.sql`,
+**2. Apply the five new files**, in this order: `ingestion_fixes_migration.sql`,
 `enrichment_outputs_migration.sql`, `enrichment_queue_migration.sql`,
-`clustering_v2_migration.sql`. This exact sequence was verified twice (fresh and repeated)
+`clustering_v2_migration.sql`, `archive_migration.sql`. This exact sequence was verified twice (fresh and repeated)
 against a clone of the production schema, made with `pg_dump --schema-only` on 2026-10-03.
 
 **Do not re-run `migration.sql` on production.** Production's views have drifted from it
@@ -77,7 +78,18 @@ UPDATE feeds SET disabled_reason = 'dormant'
 WHERE  is_active = false AND disabled_reason IS NULL AND fail_count < 5;   -- review first
 ```
 
-**6. Watch the first day:**
+**6. First archive run, done cautiously.** Run it once with `--no-prune` (or trigger
+`archive.yml` with `no_prune=true`). Check `python archive.py status` and spot-check a fetched
+day in DuckDB. Then let the daily job prune. When the backlog has been pruned (about 2.3M
+rows older than 30 days), reclaim the disk space during a pause in ingestion:
+```sql
+VACUUM (FULL, ANALYZE) articles;          -- rewrites the table; locks it while running
+VACUUM (FULL, ANALYZE) article_entities;
+```
+(or `pg_repack`, which locks only briefly). Afterwards, reduce the provisioned disk in the
+Supabase dashboard if it doesn't shrink on its own.
+
+**7. Watch the first day:**
 ```sql
 SELECT * FROM enrichment_queue_health;   -- pending should drain; dead_letter ~0
 SELECT * FROM cluster_health;            -- clustered_pct ~100, seed_pct 60-80 %

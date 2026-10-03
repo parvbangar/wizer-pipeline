@@ -181,6 +181,37 @@ SELECT * FROM enrichment_queue_health;     -- pending, in flight, dead letters, 
 
 ---
 
+## Article archive
+
+Postgres keeps a **30-day hot window**; older articles move to Parquet in the private
+Supabase Storage bucket `article-archive` (`archive.yml`, daily):
+
+```
+articles/YYYY/MM/DD/part-NNNN.parquet   every column, ≤ 10K articles per part (~15 MB)
+entities/YYYY/MM/DD/part-NNNN.parquet   their named entities
+clusters/YYYY/MM/DD.parquet             the story clusters they belong to (no vectors)
+```
+
+Rows are deleted only after their Parquet copy has been re-downloaded and verified (SHA-256,
+row counts, exact id set), and the SQL delete function refuses any day that is unverified,
+inside the hot window, or changed since export. On production data, Parquet with zstd takes
+**about 1.4 KB per article against about 4.4 KB in Postgres**: the 2.98M articles held on
+2026-10-03 are about 4 GB as Parquet against 13.2 GB in the database.
+
+```bash
+python archive.py run --dry-run          # what would move
+python archive.py run --no-prune         # export + verify, delete nothing
+python archive.py status                 # per-day log
+python archive.py fetch --start 2026-04-09 --end 2026-04-30 --out ./archive
+python -c "import duckdb; print(duckdb.sql(\"SELECT domain, count(*) c FROM 'archive/articles/**/*.parquet' GROUP BY 1 ORDER BY c DESC LIMIT 10\"))"
+```
+
+Deleting rows frees space *inside* Postgres (new rows reuse it). To shrink the database
+files themselves after the first big archive, run `VACUUM FULL articles` (locks the table) or
+`pg_repack` during a pause in ingestion. See `docs/MIGRATIONS.md`.
+
+---
+
 ## Configuration
 
 Set `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` as GitHub Actions secrets, and locally in
@@ -228,6 +259,7 @@ WIZER_TEST_DSN="host=localhost port=5432 user=postgres password=postgres" pytest
 ```
 main.py                 Layer 1 CLI          enrich.py       Layer 2 CLI
 push_feeds.py           CSV → feeds          cluster.py      clustering ops CLI
+archive.py              archive CLI          archiver/       Parquet export, verify, prune
 pipeline/               Layer 1 modules      enrichment/     Layer 2 modules
   config, poller, crawler, db, dedup,          config, db, runner, clustering,
   circuit_breaker                              cluster_maintenance, steps/*
@@ -236,5 +268,5 @@ tools/                  db_migrations (order), pg_backend (direct-Postgres adapt
                         e2e_local, cluster_eval/ (clustering calibration),
                         classifier_eval/ (category calibration)
 tests/                  unit + SQL integration tests
-.github/workflows/      ingest_* (6), enrich, cluster, cluster_maintenance, keepalive, tests
+.github/workflows/      ingest_* (6), enrich, cluster, cluster_maintenance, archive, keepalive, tests
 ```

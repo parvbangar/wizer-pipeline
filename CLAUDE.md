@@ -147,9 +147,11 @@ already have a cluster.
 - **`newspaper3k`'s internal re-fetch** is not bounded by the crawler's per-article deadline.
 - **`LEGACY_URL_HASH_CHECK`** can be removed about 90 days after the URL-normalisation change
   is deployed.
-- **Retention:** article pruning is disabled (`ARTICLE_HARD_LIMIT=0`). The planned design is
-  to archive articles older than about 90 days to month-partitioned Parquet, then prune only
-  rows that have been archived.
+- **Retention** is handled by the archive (`archive.py`, `archiver/`, `archive.yml`), not
+  `ARTICLE_HARD_LIMIT`, which stays 0. Postgres keeps a 30-day hot window. Older days are
+  exported to Parquet in the Storage bucket `article-archive`, verified, then deleted through
+  `wizer_prune_archived_day()`. That function refuses unverified, hot-window or changed days.
+  **Never delete articles any other way.**
 
 ## Running things
 
