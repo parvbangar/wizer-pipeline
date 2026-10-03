@@ -48,6 +48,20 @@ CREATE TABLE IF NOT EXISTS article_archive_log (
 
 ALTER TABLE article_archive_log ENABLE ROW LEVEL SECURITY;   -- service role only
 
+-- Explicit table grants. Do NOT rely on default privileges: on this Supabase
+-- project, tables created by `postgres` get only DELETE/TRUNCATE/REFERENCES/
+-- TRIGGER for service_role (no SELECT/INSERT/UPDATE → "permission denied" from
+-- the API) and DELETE/TRUNCATE for anon and authenticated.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    EXECUTE 'REVOKE ALL ON TABLE article_archive_log FROM anon, authenticated';
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+    EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE article_archive_log TO service_role';
+  END IF;
+END $$;
+
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 2. wizer_archive_day_stats — what a day holds right now

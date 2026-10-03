@@ -148,6 +148,20 @@ CREATE TABLE IF NOT EXISTS enrichment_runs (
 CREATE INDEX IF NOT EXISTS enrichment_runs_started_idx
   ON enrichment_runs (started_at DESC);
 
+-- Explicit table grants. Do NOT rely on default privileges: on this Supabase
+-- project, tables created by `postgres` get only DELETE/TRUNCATE/REFERENCES/
+-- TRIGGER for service_role (no SELECT/INSERT/UPDATE → "permission denied" from
+-- the API) and DELETE/TRUNCATE for anon and authenticated.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    EXECUTE 'REVOKE ALL ON TABLE enrichment_runs FROM anon, authenticated';
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+    EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE enrichment_runs TO service_role';
+  END IF;
+END $$;
+
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 5. wizer_enrichment_queue_depth — cheap count used at run start

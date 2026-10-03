@@ -168,6 +168,14 @@ class TestMigrations:
                 "FROM pg_proc p WHERE proname = %s", (fn,)
             ).fetchone()[0] is True
 
+    @pytest.mark.parametrize("table", ["enrichment_runs", "article_archive_log"])
+    def test_new_tables_granted_explicitly(self, conn, table):
+        """Production's default privileges give service_role no SELECT/INSERT/UPDATE."""
+        for priv in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+            assert conn.execute("SELECT has_table_privilege('service_role', %s, %s)", (table, priv)).fetchone()[0]
+        for priv in ("SELECT", "DELETE", "TRUNCATE"):
+            assert not conn.execute("SELECT has_table_privilege('anon', %s, %s)", (table, priv)).fetchone()[0]
+
     def test_monitoring_views_query(self, conn):
         for view in ("cluster_health", "top_stories_24h", "enrichment_queue_health"):
             conn.execute(f"SELECT * FROM {view}").fetchall()
