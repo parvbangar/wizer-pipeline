@@ -13,3 +13,8 @@ credentials.json
 *.pem
 *.key
 secrets/
+.venv/
+.venv-ci/
+
+# Calibration inputs fetched from live RSS — regenerate with tools/cluster_eval/fetch_headlines.py
+tools/cluster_eval/data/
