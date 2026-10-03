@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ingest-weekly
+  group: ingest-weekly-v2   # renamed 2026-10-03: the old group was held by a ghost run left from the inactivity shutdown
   cancel-in-progress: false
 
 jobs:
