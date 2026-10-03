@@ -7,12 +7,16 @@ name: Article archive
 # verified, is inside the hot window, or changed since export.
 # See archive.py, archiver/runner.py and docs/archive_migration.sql.
 #
-# Resumable: a run that hits the time budget stops between days; the next run
-# continues. The first runs work through the backlog (~2 GB of Parquet per
-# month of articles).
+# Gentle by design: the production database is a Supabase Micro instance whose
+# disk I/O the export competes for (on 2026-10-03 a full-speed export starved
+# ingestion and clustering). At most 5 days / 120 min per nightly run, so the
+# ~60-day backlog drains over ~2 weeks; afterwards each run moves one day.
+# Resumable: the next run continues where this one stopped.
 on:
   schedule:
-    - cron: "30 4 * * *"
+    # 21:30 UTC = 03:00 IST, the quietest hour for Indian news (04:30 UTC was
+    # 10:00 IST — peak ingestion).
+    - cron: "30 21 * * *"
   workflow_dispatch:
     inputs:
       no_prune:
@@ -44,7 +48,7 @@ jobs:
         run: |
           FLAGS=""
           if [ "${{ github.event.inputs.no_prune }}" = "true" ]; then FLAGS="--no-prune"; fi
-          python archive.py run --time-budget 300 $FLAGS
+          python archive.py run --time-budget 120 --max-days 5 $FLAGS
       - name: Archive status
         if: always()
         run: python archive.py status --last 10

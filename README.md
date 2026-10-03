@@ -184,7 +184,7 @@ SELECT * FROM enrichment_queue_health;     -- pending, in flight, dead letters, 
 ## Article archive
 
 Postgres keeps a **30-day hot window**; older articles move to Parquet in the private
-Supabase Storage bucket `article-archive` (`archive.yml`, daily):
+Supabase Storage bucket `article-archive` (`archive.yml`, nightly 03:00 IST, at most 5 days per run so it never starves the small production instance):
 
 ```
 articles/YYYY/MM/DD/part-NNNN.parquet   every column, ≤ 10K articles per part (~15 MB)
