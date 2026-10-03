@@ -1,0 +1,60 @@
+name: Layer 2 — Story clustering
+
+# Clusters EVERY ingested article — independent of NLP enrichment, which only
+# reaches a fraction of the ~50K articles/day. Embedding a headline is ~100x
+# cheaper than the NLP set, so this job keeps outlet_count complete.
+#
+# Triggers: after each ingestion run (workflow_run) + every 30 min fallback.
+# One run at a time; a queued run picks up where the last one stopped
+# (articles without a cluster_id, oldest first).
+on:
+  workflow_run:
+    workflows:
+      - "Ingest — breaking_news (every 1 hour)"
+      - "Ingest — multiple_daily (every 3 hours)"
+      - "Ingest — daily + unknown (every 12 hours)"
+      - "Ingest — weekly (every 24 hours)"
+      - "Ingest — several_weekly (every 24 hours)"
+      - "Ingest — monthly (every 24 hours)"
+    types: [completed]
+  schedule:
+    - cron: "15,45 * * * *"
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: "Look-back window in hours (use 72+ for a catch-up backfill)"
+        required: false
+        default: "12"
+
+concurrency:
+  group: story-clustering
+  cancel-in-progress: false
+
+jobs:
+  cluster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      CLUSTERING_ENABLED:   ${{ vars.CLUSTERING_ENABLED || 'true' }}
+      HF_HOME:              /home/runner/.cache/huggingface
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-cluster.txt
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/huggingface
+          key: hf-e5base-v1
+      - name: Install PyTorch (CPU-only)
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -r requirements-cluster.txt
+      - name: Cluster new articles
+        if: env.CLUSTERING_ENABLED != 'false'
+        # Stop cleanly at 50 min (job timeout 60); the next run continues.
+        run: python cluster.py run --hours ${{ github.event.inputs.hours || '12' }} --time-budget 50

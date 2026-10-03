@@ -1,25 +1,14 @@
-# News Ingestion Pipeline — Python dependencies
+# News Ingestion Pipeline — Python dependencies (Layer 1 + Layer 2)
 # Install with: pip install -r requirements.txt
+#
+# Split:
+#   requirements-ingest.txt  Layer 1 only — what the ingest_*.yml workflows
+#                            and cluster_maintenance.yml install (no ML stack)
+#   requirements.txt         everything: Layer 1 + the Layer 2 NLP/ML stack
+#   requirements-dev.txt     test tooling (pytest, psycopg for SQL tests)
 
-# ── RSS/Atom parsing ──────────────────────────────────────────────────────────
-feedparser==6.0.11
-
-# ── Full-text article extraction ──────────────────────────────────────────────
-trafilatura==1.12.2          # primary — best accuracy for news articles
-readability-lxml==0.8.1      # fallback 1 — Mozilla Readability algorithm
-newspaper3k==0.2.8           # fallback 2 — broader site support, re-fetches URL
-beautifulsoup4==4.12.3       # fallback 3 — raw <p> extraction (last resort)
-lxml==5.3.0                  # HTML parser used by readability-lxml and bs4
-
-# ── Database ──────────────────────────────────────────────────────────────────
-supabase==2.10.0             # Supabase Python client
-
-# ── URL hashing ───────────────────────────────────────────────────────────────
-mmh3==4.1.0                  # MurmurHash3 — fast 64-bit URL fingerprinting
-                             # Falls back to stdlib hashlib if not installed
-
-# ── Environment ───────────────────────────────────────────────────────────────
-python-dotenv==1.0.1         # loads .env file
+# ── Layer 1: ingestion ────────────────────────────────────────────────────────
+-r requirements-ingest.txt
 
 # ── Layer 2: Enrichment ───────────────────────────────────────────────────────
 # NOTE: torch is installed separately in enrich.yml with --index-url for CPU-only
@@ -31,29 +20,24 @@ python-dotenv==1.0.1         # loads .env file
 lingua-language-detector>=2.0.0
 
 # Named Entity Recognition — spaCy for English and multilingual fallback
-#   Download: python -m spacy download en_core_web_sm
+#   Download: python -m spacy download en_core_web_md
 #             python -m spacy download xx_ent_wiki_sm
 spacy==3.8.13
 
 # Keyword extraction — unsupervised, language-agnostic, no model download
 yake==0.4.8
 
-# Category classification — multilingual zero-shot NLI (mDeBERTa)
-# Model: MoritzLaurer/mDeBERTa-v3-base-mnli-xnli (~560 MB, cached after first run)
+# Category classification + sentiment — multilingual transformers
+#   MoritzLaurer/mDeBERTa-v3-base-mnli-xnli                       (~560 MB)
+#   lxyuan/distilbert-base-multilingual-cased-sentiments-student  (~268 MB)
 transformers>=4.40.0
 
-# Story clustering — multilingual sentence embeddings (LaBSE by Google)
-# Model: sentence-transformers/LaBSE (~471 MB, cached after first run)
-# Supports all Indian languages: hi, ta, te, bn, mr, gu, kn, ml, pa, ur
+# Story clustering — multilingual sentence embeddings
+#   intfloat/multilingual-e5-base (~1.1 GB, 768-dim, 100 languages incl. all
+#   major Indian languages). Chosen over LaBSE on labelled data — see
+#   docs/CLUSTERING.md §Calibration.
 sentence-transformers>=3.0.0
 
-# Sentiment analysis — multilingual (covers Hindi, Tamil, Telugu, Bengali, etc.)
-# Model: lxyuan/distilbert-base-multilingual-cased-sentiments-student (~268 MB)
-# (transformers already listed above for mDeBERTa — no additional install needed)
-
-# Image perceptual hashing — for image-level dedup and VLM prep
+# Image perceptual hashing — for image-level dedup and clustering evidence
 imagehash==4.3.1
 Pillow==10.4.0
-
-# ── Testing ───────────────────────────────────────────────────────────────────
-pytest==8.3.3

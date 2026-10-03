@@ -64,35 +64,48 @@ _STRIP_PARAMS: frozenset = frozenset({
     "utm_source", "utm_medium", "utm_campaign", "utm_term",
     "utm_content", "utm_id", "utm_referrer",
     "gclid", "gclsrc", "gbraid", "wbraid",
-    "fbclid", "fb_action_ids", "fb_source",
+    "fbclid", "fb_action_ids", "fb_source", "fb_ref",
     "twclid", "msclkid",
-    "hsa_acc", "hsa_cam", "hsa_grp", "hsa_ad",
+    "hsa_acc", "hsa_cam", "hsa_grp", "hsa_ad", "hsa_src",
+    "hsa_tgt", "hsa_kw", "hsa_mt", "hsa_net", "hsa_ver",
     "mc_cid", "mc_eid",
     "_ga", "igshid", "s_cid", "ncid", "cmpid", "mbid",
-    "ref", "referrer", "source", "origin",
-    "sid", "session_id", "share", "sharesource",
+    # NOT stripped: sid / source / origin / share - some sites use them as the
+    # content selector, so stripping collapsed distinct URLs (see dedup.py).
+    "ref", "referrer", "session_id", "sharesource",
 })
+
+_SCHEME_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]*):(//)?")
 
 
 def _normalise(url: str) -> str:
     url = url.strip()
     if not url:
         return ""
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
+    m = _SCHEME_RE.match(url)
+    if url.startswith("//"):
+        url = "https:" + url
+    elif not (m and (m.group(2) or m.group(1).lower() in ("http", "https"))):
+        url = "https://" + url          # bare "example.com/feed"
     try:
         p = urlparse(url)
+        scheme = p.scheme.lower()
+        if scheme in ("http", "https"):
+            scheme = "https"            # http and https of one feed are the same feed
         host = p.netloc.lower()
         if host.startswith("www."):
             host = host[4:]
+        if host.endswith(":80") or host.endswith(":443"):
+            host = host.rsplit(":", 1)[0]
         path = re.sub(r"/{2,}", "/", p.path)
         if len(path) > 1:
             path = path.rstrip("/")
         clean = sorted([
             (k, v) for k, v in parse_qsl(p.query, keep_blank_values=False)
             if k.lower() not in _STRIP_PARAMS
+            and not k.lower().startswith(("utm_", "hsa_"))
         ])
-        return urlunparse((p.scheme.lower(), host, path, "", urlencode(clean), ""))
+        return urlunparse((scheme, host, path, "", urlencode(clean), ""))
     except Exception:
         return url
 
@@ -176,6 +189,22 @@ _PIPELINE_DEFAULTS = {
 }
 
 
+_KNOWN_CADENCES = frozenset({
+    "breaking_news", "multiple_daily", "daily",
+    "several_weekly", "weekly", "monthly", "unknown",
+})
+
+
+def _normalise_cadence(val: str) -> str:
+    """Lower-case/trim the CSV cadence; empty or unrecognised -> 'unknown'."""
+    v = (val or "").strip().lower()
+    if v in _KNOWN_CADENCES:
+        return v
+    if v:
+        log.warning("Unrecognised update_cadence %r - using 'unknown'", val)
+    return "unknown"
+
+
 def _csv_row_to_feed(row: dict, table_cols: set[str]) -> dict:
     """
     Map one CSV row to a dict ready for Supabase insert.
@@ -190,6 +219,13 @@ def _csv_row_to_feed(row: dict, table_cols: set[str]) -> dict:
         val = _str(row.get(csv_col, ""))
         if val:
             feed[db_col] = val
+
+    # update_cadence: NEVER leave it NULL/empty.  No workflow polls a NULL
+    # cadence, so such feeds would silently never be fetched.  'unknown' IS
+    # polled (ingest_daily.yml runs `main.py --cadence unknown` every 12 h).
+    # Unrecognised values are folded to 'unknown' for the same reason.
+    if "update_cadence" in table_cols:
+        feed["update_cadence"] = _normalise_cadence(row.get("update_cadence", ""))
 
     # Boolean columns
     for col in _BOOL_COLS:

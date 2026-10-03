@@ -1,0 +1,13 @@
+# Test tooling. CI (tests.yml) installs requirements-ingest.txt + this file;
+# the unit tests stub every ML model and network call, so the 2 GB ML stack
+# is not needed to run them.
+pytest==8.3.3
+
+# SQL integration tests (tests/test_clustering_sql.py) talk to a real
+# PostgreSQL + pgvector ≥ 0.7 through psycopg. Skipped automatically when no
+# database is configured (WIZER_TEST_DSN).
+psycopg[binary]>=3.2
+numpy>=1.26
+
+# Article archive (archiver/) — Parquet writing in tests/test_archive.py
+pyarrow>=17.0

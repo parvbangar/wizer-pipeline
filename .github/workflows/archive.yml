@@ -1,0 +1,50 @@
+name: Article archive
+
+# Daily: move articles older than the hot window (ARCHIVE_HOT_DAYS, default 30)
+# from Postgres to Parquet in the private Supabase Storage bucket
+# "article-archive" — export, re-download + verify (SHA-256, row counts, ids),
+# and only then delete. The SQL delete function refuses any day that is not
+# verified, is inside the hot window, or changed since export.
+# See archive.py, archiver/runner.py and docs/archive_migration.sql.
+#
+# Resumable: a run that hits the time budget stops between days; the next run
+# continues. The first runs work through the backlog (~2 GB of Parquet per
+# month of articles).
+on:
+  schedule:
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+    inputs:
+      no_prune:
+        description: "Export + verify only, delete nothing (true/false)"
+        required: false
+        default: "false"
+
+concurrency:
+  group: article-archive
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    env:
+      SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      ARCHIVE_HOT_DAYS:     ${{ vars.ARCHIVE_HOT_DAYS || '30' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-archive.txt
+      - run: pip install -r requirements-archive.txt
+      - name: Archive → verify → prune
+        run: |
+          FLAGS=""
+          if [ "${{ github.event.inputs.no_prune }}" = "true" ]; then FLAGS="--no-prune"; fi
+          python archive.py run --time-budget 300 $FLAGS
+      - name: Archive status
+        if: always()
+        run: python archive.py status --last 10

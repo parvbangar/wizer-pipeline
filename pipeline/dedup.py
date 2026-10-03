@@ -9,7 +9,8 @@ WHY DO WE NEED THIS?
   The Hindu, NDTV, India Today, and 50 other feeds — all within minutes.
   Without deduplication, your articles table would have 50 identical rows.
 
-HOW IT WORKS — TWO LAYERS:
+HOW IT WORKS — TWO ALGORITHMS (exact URL hash + SimHash near-dup; the poller
+adds an in-memory and a database check on top of the exact hash):
 ─────────────────────────────────────────────────────────────────────────────
 LAYER 1: EXACT URL DEDUPLICATION
   Step 1: Normalise the URL (explained below)
@@ -71,26 +72,41 @@ from pipeline.config import HASH_SEED, SIMHASH_DISTANCE_THRESHOLD
 # These are added by analytics/marketing tools and don't change article content
 # ─────────────────────────────────────────────────────────────────────────────
 _STRIP_PARAMS: frozenset = frozenset({
-    # Google Analytics / UTM
+    # Google Analytics / UTM  (unambiguous campaign tracking)
     "utm_source", "utm_medium", "utm_campaign", "utm_term",
     "utm_content", "utm_id", "utm_referrer",
-    # Google Ads
+    # Google Ads click ids
     "gclid", "gclsrc", "gbraid", "wbraid",
-    # Facebook
+    # Facebook click / action ids
     "fbclid", "fb_action_ids", "fb_source", "fb_ref",
     # Twitter / X
     "twclid",
     # Microsoft Ads
     "msclkid",
-    # HubSpot
+    # HubSpot ad params
     "hsa_acc", "hsa_cam", "hsa_grp", "hsa_ad", "hsa_src",
     "hsa_tgt", "hsa_kw", "hsa_mt", "hsa_net", "hsa_ver",
     # Mailchimp
     "mc_cid", "mc_eid",
-    # Miscellaneous tracking
+    # Miscellaneous, clearly-tracking-only parameters
     "_ga", "igshid", "s_cid", "ncid", "cmpid", "mbid",
-    "ref", "referrer", "source", "origin",
-    "sid", "session_id", "share", "sharesource",
+    # "ref"/"referrer": overwhelmingly "where did the click come from"
+    # (?ref=twitter, ?ref=rss).  Kept stripped.
+    "ref", "referrer",
+    # session_id / sharesource: per-visitor or per-share-button values, never
+    # an article identifier.  Kept stripped.
+    "session_id", "sharesource",
+})
+
+# REMOVED from the strip list (they used to be stripped):
+#   sid, source, origin, share
+# Some publishers use these as the ARTICLE ID or section selector
+# (e.g. story.php?sid=123, view?source=wire-17), so stripping them collapsed
+# distinct articles into one hash and silently dropped the second article.
+# A genuinely tracking-only ?source=rss variant now simply hashes as a separate
+# URL; the near-duplicate (SimHash) layer still flags it by title.
+_LEGACY_STRIP_PARAMS: frozenset = _STRIP_PARAMS | frozenset({
+    "source", "origin", "sid", "share",
 })
 
 
@@ -98,11 +114,14 @@ _STRIP_PARAMS: frozenset = frozenset({
 # LAYER 1: EXACT URL DEDUPLICATION
 # ─────────────────────────────────────────────────────────────────────────────
 
-def normalise_url(url: str) -> str:
+_SCHEME_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]*):(//)?")
+
+
+def normalise_url(url: str, collapse_scheme: bool = True) -> str:
     """
     Convert any URL into a canonical form so the same article always
     produces the same string regardless of tracking parameters, www prefix,
-    trailing slashes, or letter case in the domain.
+    trailing slashes, scheme, or letter case in the scheme/domain.
 
     Example:
       Input:  "https://www.thehindu.com/news/art.cms?utm_source=tw&fbclid=abc"
@@ -110,56 +129,116 @@ def normalise_url(url: str) -> str:
 
     Steps applied:
       1. Strip whitespace
-      2. Add https:// if missing
-      3. Lowercase the domain (thehindu.com not TheHindu.COM)
-      4. Remove www. prefix
-      5. Remove tracking query parameters
-      6. Sort remaining query parameters (order doesn't matter for content)
-      7. Collapse double slashes in the path
-      8. Remove trailing slash from path
-      9. Drop the fragment (#comments, #section etc.)
+      2. Add https:// if missing (scheme detection is case-insensitive)
+      3. Lowercase the scheme and domain
+      4. http:// and https:// collapse to https:// (when collapse_scheme=True)
+      5. Remove www. prefix and default ports (:80 / :443)
+      6. Remove tracking query parameters (see _STRIP_PARAMS)
+      7. Sort remaining query parameters (order doesn't matter for content)
+      8. Collapse double slashes in the path
+      9. Remove trailing slash from path
+     10. Drop the fragment (#comments, #section etc.)
+
+    collapse_scheme:
+      True  (default) -> canonical form used for HASHING: http and https
+                        versions of one article hash identically.
+      False           -> keeps the original http/https scheme.  The poller uses
+                        this for the URL it actually FETCHES and stores, since
+                        some publishers are still http-only and rewriting them
+                        to https would break the crawl.
     """
     if not url:
         return ""
 
     url = url.strip()
 
-    # Add scheme if missing
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
+    m = _SCHEME_RE.match(url)
+    if url.startswith("//"):
+        url = "https:" + url                     # protocol-relative
+    elif m and (m.group(2) or m.group(1).lower() in ("http", "https")):
+        pass                                     # has an explicit scheme
+    else:
+        url = "https://" + url                   # bare "example.com/x"
 
     try:
         parsed = urlparse(url)
     except Exception:
         return url  # return as-is if parsing fails
 
+    scheme = parsed.scheme.lower()
+    if scheme in ("http", "https") and collapse_scheme:
+        scheme = "https"
+
     # Lowercase and strip www. from host
     host = parsed.netloc.lower()
     if host.startswith("www."):
         host = host[4:]
+    # Default ports never change which page is served
+    if host.endswith(":80") or host.endswith(":443"):
+        host = host.rsplit(":", 1)[0]
 
     # Clean the path
     path = re.sub(r"/{2,}", "/", parsed.path)   # collapse //
     if len(path) > 1:
         path = path.rstrip("/")                  # remove trailing /
 
-    # Filter and sort query parameters
+    # Filter and sort query parameters.  utm_* / hsa_* are stripped by prefix
+    # too so new variants (utm_name, hsa_cre ...) are covered.
     clean_params = sorted([
         (k, v)
         for k, v in parse_qsl(parsed.query, keep_blank_values=False)
         if k.lower() not in _STRIP_PARAMS
+        and not k.lower().startswith(("utm_", "hsa_"))
     ])
     query = urlencode(clean_params)
 
     # Reassemble — no fragment
-    return urlunparse((
-        parsed.scheme.lower(),  # http or https (lowercased)
-        host,                   # domain without www
-        path,                   # cleaned path
-        "",                     # params (rarely used)
-        query,                  # cleaned query string
-        "",                     # no fragment
-    ))
+    return urlunparse((scheme, host, path, "", query, ""))
+
+
+def _legacy_normalise_url(url: str) -> str:
+    """
+    The ORIGINAL normalise_url(), kept so we can recompute the url_hash that
+    already-stored articles were saved under.
+
+    TRANSITION (see config.LEGACY_URL_HASH_CHECK): the poller treats an article
+    as already-seen if EITHER hash(normalise_url) or hash(_legacy_normalise_url)
+    exists, but only ever STORES the new hash.  Remove this function and the
+    legacy check ~90 days after deploying the normalisation change, once old
+    rows have aged out of every feed's RSS window.
+
+    Known quirks preserved on purpose: http vs https hash differently, and an
+    uppercase scheme ("HTTP://X.COM") is mangled.
+    """
+    if not url:
+        return ""
+
+    url = url.strip()
+
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url
+
+    host = parsed.netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+
+    path = re.sub(r"/{2,}", "/", parsed.path)
+    if len(path) > 1:
+        path = path.rstrip("/")
+
+    clean_params = sorted([
+        (k, v)
+        for k, v in parse_qsl(parsed.query, keep_blank_values=False)
+        if k.lower() not in _LEGACY_STRIP_PARAMS
+    ])
+    query = urlencode(clean_params)
+
+    return urlunparse((parsed.scheme.lower(), host, path, "", query, ""))
 
 
 # def url_hash(url: str) -> int:
@@ -191,12 +270,9 @@ def normalise_url(url: str) -> str:
 #             unsigned -= (1 << 64)
 #         return unsigned
 
-def url_hash(url: str) -> int:
-    """
-    Return a 64-bit SIGNED integer fingerprint of the normalised URL.
-    PostgreSQL bigint range: -9223372036854775808 to 9223372036854775807
-    """
-    data = normalise_url(url).encode("utf-8")
+def _hash_normalised(normalised: str) -> int:
+    """64-bit SIGNED MurmurHash3 (or SHA-256 fold) of an already-normalised URL."""
+    data = normalised.encode("utf-8")
     if _HAS_MMH3:
         h1, _ = mmh3.hash64(data, seed=HASH_SEED, signed=True)
         return h1
@@ -207,6 +283,23 @@ def url_hash(url: str) -> int:
     if unsigned >= (1 << 63):
         unsigned -= (1 << 64)
     return unsigned
+
+
+def url_hash(url: str) -> int:
+    """
+    Return a 64-bit SIGNED integer fingerprint of the normalised URL.
+    PostgreSQL bigint range: -9223372036854775808 to 9223372036854775807
+    This is the hash that is STORED in articles.url_hash.
+    """
+    return _hash_normalised(normalise_url(url))
+
+
+def legacy_url_hash(url: str) -> int:
+    """
+    The url_hash that the PRE-change normalisation would have produced.
+    Used only for the transition-period "seen under either hash" check.
+    """
+    return _hash_normalised(_legacy_normalise_url(url))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LAYER 2: NEAR-DUPLICATE TITLE DEDUPLICATION (SimHash)
@@ -292,9 +385,14 @@ def hamming_distance(h1: int, h2: int) -> int:
     Distance > 3 = different content
 
     Python trick: XOR gives 1 at every position where the bits differ,
-    then bin().count("1") counts those positions.
+    then we count those positions.
+
+    SimHashes are stored as SIGNED int64 (PostgreSQL bigint), so one or both
+    inputs can be negative.  bin(negative) yields "-0b..." and Python's
+    infinite two's-complement gives wrong counts, so we mask the XOR to 64
+    bits first.
     """
-    return bin(h1 ^ h2).count("1")
+    return ((h1 ^ h2) & 0xFFFFFFFFFFFFFFFF).bit_count()
 
 
 def is_near_duplicate(title1_hash: int, title2_hash: int) -> bool:

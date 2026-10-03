@@ -29,6 +29,7 @@ SUPABASE_KEY: str = os.getenv("SUPABASE_SERVICE_KEY", "")
 # ─────────────────────────────────────────────────────────────────────────────
 TABLE_ARTICLES  = "articles"
 TABLE_ENTITIES  = "article_entities"
+TABLE_RUNS      = "enrichment_runs"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -78,27 +79,12 @@ WORDS_PER_MINUTE = 200   # average adult reading speed used for reading_time_min
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP: LANGUAGE DETECTION
 #
-# langdetect needs a minimum amount of text to be accurate.
+# lingua needs a minimum amount of text to be accurate.
 # Short snippets (< 20 chars) produce unreliable results — skip them.
 # ─────────────────────────────────────────────────────────────────────────────
 LANG_DETECT_MIN_CHARS = 20
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# STEP: NAMED ENTITY RECOGNITION
-#
-# SPACY_MODEL:
-#   'en_core_web_sm'  — 12 MB, fast, good for English news (default)
-#   'en_core_web_md'  — 43 MB, better accuracy, worth it on paid infra
-#   'en_core_web_lg'  — 741 MB, best accuracy, use only if you have fast storage
-#
-#   Download command:  python -m spacy download en_core_web_sm
-#
-# NER_MIN_SALIENCE:
-#   Entities below this salience score are not stored.
-#   Keeps the article_entities table lean — filters out
-#   incidental mentions like "he said", "the company", etc.
-# ─────────────────────────────────────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
 # CATEGORY CLASSIFICATION — mDeBERTa zero-shot NLI
 #
@@ -113,11 +99,12 @@ LANG_DETECT_MIN_CHARS = 20
 #   Below this → return 'general'. Prevents low-confidence mislabelling.
 # ─────────────────────────────────────────────────────────────────────────────
 DEBERTA_MODEL               = os.getenv("DEBERTA_MODEL", "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli")
-# With 12 NLI candidate labels, random baseline per label ≈ 0.083.
-# 0.20 = 2.4× baseline — accepts moderate-confidence correct classifications
-# while still rejecting genuine noise. 0.35 was too aggressive: 85% of articles
-# defaulted to "general" in production because it required 4.2× baseline.
-CLASSIFY_CONFIDENCE_THRESHOLD = float(os.getenv("CLASSIFY_CONFIDENCE_THRESHOLD", "0.20"))
+# Minimum independent entailment probability for the best category label;
+# below it the article is "general". 0.30 is the measured sweet spot on the
+# labelled set (68.1 % accuracy with the shipped input + rules; 0.50 → lower).
+# Previous values (0.15 / 0.20 / 0.35) applied to a softmax over 12 long
+# labels, a different scale — see enrichment/steps/classifier.py.
+CLASSIFY_CONFIDENCE_THRESHOLD = float(os.getenv("CLASSIFY_CONFIDENCE_THRESHOLD", "0.30"))
 # Minimum per-tag sigmoid score to include a tag in ai_tag.
 # multi_label=True uses sigmoid (not softmax), so scores are independent.
 # Raised 0.25 → 0.35: at 0.25 "conflict" and "crime" fired on sports/general
@@ -126,21 +113,22 @@ CLASSIFY_TAG_THRESHOLD        = float(os.getenv("CLASSIFY_TAG_THRESHOLD",       
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# NER (spaCy) — kept for entity extraction (tagging, display, app layer)
+# STEP: NAMED ENTITY RECOGNITION (spaCy)
+#
+# Two models based on detected language:
+#   SPACY_MODEL              — English articles
+#   SPACY_MULTILINGUAL_MODEL — all other languages (Hindi, Tamil, etc.)
+#
+# NER_MIN_SALIENCE:
+#   Entities below this salience score are not stored. Keeps article_entities
+#   lean — filters incidental mentions.
 # ─────────────────────────────────────────────────────────────────────────────
 # Upgraded from en_core_web_sm (12 MB) → en_core_web_md (43 MB) after Supabase Pro upgrade.
 # Requires: python -m spacy download en_core_web_md
+#           python -m spacy download xx_ent_wiki_sm
 SPACY_MODEL              = os.getenv("SPACY_MODEL",             "en_core_web_md")
 SPACY_MULTILINGUAL_MODEL = os.getenv("SPACY_MULTILINGUAL_MODEL", "xx_ent_wiki_sm")
 NER_MIN_SALIENCE         = 0.1
-#
-# Two models based on detected language:
-#   en_core_web_sm  — English articles
-#   xx_ent_wiki_sm  — All other languages (Hindi, Tamil, etc.)
-#
-# Download commands:
-#   python -m spacy download en_core_web_sm
-#   python -m spacy download xx_ent_wiki_sm
 
 # Entity types we care about for Indian news
 # spaCy label → stored entity_type
@@ -172,276 +160,6 @@ ENTITY_TYPE_MAP = {
 MAX_KEYWORDS             = int(os.getenv("MAX_KEYWORDS", "10"))
 KEYWORD_MAX_NGRAM        = 3
 KEYWORD_DEDUP_THRESHOLD  = 0.9
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# STEP: ARTICLE CATEGORY CLASSIFICATION
-#
-# Rule-based keyword classifier for Indian news categories.
-# More granular than the feed-level iab_tier1/iab_tier2.
-#
-# WHY RULE-BASED (not ML)?
-#   - No model download, no GPU, fast
-#   - Deterministic — easier to audit and fix
-#   - Indian-specific keywords you control
-#   - Can upgrade to zero-shot classifier later without changing the interface
-#
-# Category priority: categories listed first win on ties.
-# ─────────────────────────────────────────────────────────────────────────────
-CATEGORY_RULES: dict[str, list[str]] = {
-    # ── Cricket ───────────────────────────────────────────────────────────────
-    # "odi" removed — matches "commodity". Use "one day international" instead.
-    # "t20" kept — \b boundary makes it safe (won't match inside other words).
-    "cricket": [
-        # English
-        "ipl", "bcci", "cricket", "test match", "one day international", "t20",
-        "virat kohli", "rohit sharma", "ms dhoni", "sachin tendulkar",
-        "batting", "bowling", "wicket", "innings", "run chase", "century",
-        "world cup cricket", "ranji trophy", "super over", "duck out",
-        "twenty20", "powerplay",
-        # Hindi (Devanagari)
-        "क्रिकेट", "आईपीएल", "बीसीसीआई", "विराट कोहली", "रोहित शर्मा",
-        "धोनी", "बल्लेबाज", "गेंदबाज", "विकेट",
-        # Tamil
-        "கிரிக்கெட்", "ஐபிஎல்",
-        # Telugu
-        "క్రికెట్", "ఐపీఎల్",
-        # Bengali
-        "ক্রিকেট", "আইপিএল",
-        # Marathi
-        "क्रिकेट", "आयपीएल",
-    ],
-
-    # ── Crypto ────────────────────────────────────────────────────────────────
-    # Separate category — crypto/blockchain is a major news vertical.
-    # Must come before business/technology to win on tie-breaks.
-    "crypto": [
-        # English
-        "bitcoin", "ethereum", "binance", "cryptocurrency", "crypto",
-        "blockchain", "defi", "nft", "web3", "altcoin", "stablecoin",
-        "usdt", "bnb", "btc", "eth", "solana", "ripple", "xrp", "dogecoin",
-        "coinbase", "crypto wallet", "crypto exchange", "digital currency",
-        "decentralized", "mining rig", "proof of stake", "proof of work",
-        "ledger nano", "metamask", "uniswap", "airdrop", "token listing",
-        "bull run", "bear market crypto", "halving", "satoshi",
-        # Hindi (Devanagari)
-        "बिटकॉइन", "क्रिप्टो", "ब्लॉकचेन", "क्रिप्टोकरेंसी",
-        # Tamil
-        "கிரிப்டோ", "பிட்காயின்",
-        # Telugu
-        "క్రిప్టో", "బిట్‌కాయిన్",
-        # Bengali
-        "ক্রিপ্টো", "বিটকয়েন",
-    ],
-
-    # ── Politics ──────────────────────────────────────────────────────────────
-    # Removed "cm " and "mp " (trailing spaces replaced by \b word boundaries)
-    # "cm" and "mp" kept — \b now prevents "income", "trump" false matches.
-    "politics": [
-        # English
-        "bjp", "congress", "aap", "modi", "rahul gandhi", "parliament",
-        "lok sabha", "rajya sabha", "election", "chief minister", "cm",
-        "minister", "mla", "mp", "governor", "president of india",
-        "political party", "vote", "constituency", "bypoll", "cabinet",
-        "nda", "upa", "indi alliance", "assembly election", "general election",
-        "exit poll", "voter turnout", "opposition party",
-        # Hindi (Devanagari)
-        "भाजपा", "कांग्रेस", "चुनाव", "संसद", "प्रधानमंत्री", "मुख्यमंत्री",
-        "राज्यसभा", "लोकसभा", "सरकार", "राजनीति", "मतदान", "विपक्ष",
-        # Tamil
-        "தேர்தல்", "பாஜக", "நாடாளுமன்றம்", "அரசியல்",
-        # Telugu
-        "ఎన్నికలు", "పార్లమెంటు", "రాజకీయాలు", "బిజెపి",
-        # Bengali
-        "নির্বাচন", "সংসদ", "রাজনীতি", "বিজেপি",
-        # Marathi
-        "निवडणूक", "राजकारण",
-    ],
-
-    # ── Business ──────────────────────────────────────────────────────────────
-    "business": [
-        # English
-        "sensex", "nse", "bse", "nifty", "rbi", "rupee", "gdp", "inflation",
-        "stock market", "shares", "ipo", "sebi", "mutual fund", "revenue",
-        "profit", "quarterly results", "unicorn", "funding round",
-        "acquisition", "merger", "fiscal deficit", "import", "export",
-        "gst", "trade deal", "economic growth", "economy", "retail sales",
-        "foreign investment", "interest rate", "repo rate", "balance sheet",
-        "earnings report", "market cap",
-        # Hindi (Devanagari)
-        "शेयर बाजार", "अर्थव्यवस्था", "बजट", "रुपया", "महंगाई", "व्यापार",
-        "निवेश", "आर्थिक",
-        # Tamil
-        "பங்கு சந்தை", "பொருளாதாரம்", "வணிகம்",
-        # Telugu
-        "స్టాక్ మార్కెట్", "ఆర్థిక వ్యవస్థ", "వ్యాపారం",
-        # Bengali
-        "শেয়ার বাজার", "অর্থনীতি", "ব্যবসা",
-    ],
-
-    # ── Entertainment ─────────────────────────────────────────────────────────
-    "entertainment": [
-        # English
-        "bollywood", "box office", "film", "movie", "actor", "actress",
-        "director", "ott platform", "netflix", "amazon prime", "hotstar",
-        "web series", "music album", "song release", "celebrity", "award",
-        "filmfare", "shah rukh khan", "salman khan", "deepika padukone",
-        "ranveer singh", "alia bhatt", "kollywood", "tollywood", "mollywood",
-        "trailer launch", "box office collection",
-        # Hindi (Devanagari)
-        "बॉलीवुड", "फिल्म", "अभिनेता", "अभिनेत्री", "संगीत", "पुरस्कार",
-        "सिनेमा", "वेब सीरीज", "गाना",
-        # Tamil
-        "சினிமா", "திரைப்படம்", "நடிகர்", "நடிகை", "இசை",
-        # Telugu
-        "సినిమా", "చలనచిత్రం", "నటుడు", "నటి", "సంగీతం",
-        # Bengali
-        "চলচ্চিত্র", "সিনেমা", "অভিনেতা", "সংগীত",
-        # Marathi
-        "चित्रपट", "अभिनेता",
-    ],
-
-    # ── Technology ────────────────────────────────────────────────────────────
-    # Removed "ai " and "app " (trailing spaces). "ai" and "app" with \b are safe.
-    # Removed "tech " — "tech" with \b is fine and more precise.
-    "technology": [
-        # English
-        "artificial intelligence", "machine learning", "deep learning",
-        "tech startup", "software", "smartphone", "5g network", "cybersecurity",
-        "data breach", "isro", "satellite launch", "space mission",
-        "elon musk", "google", "meta", "apple", "microsoft", "nvidia",
-        "semiconductor", "chip shortage", "generative ai", "chatgpt", "openai",
-        "app store", "android", "ios", "electric vehicle", "ev",
-        # Hindi (Devanagari)
-        "तकनीक", "कृत्रिम बुद्धिमत्ता", "मोबाइल", "इंटरनेट", "साइबर",
-        "अंतरिक्ष", "उपग्रह",
-        # Tamil
-        "தொழில்நுட்பம்", "செயற்கை நுண்ணறிவு", "அறிவியல்",
-        # Telugu
-        "సాంకేతికత", "కృత్రిమ మేధస్సు", "విజ్ఞానం",
-    ],
-
-    # ── Sports (non-cricket) ──────────────────────────────────────────────────
-    "sports": [
-        # English
-        "football", "fifa", "isl", "hockey", "badminton", "tennis",
-        "olympics", "commonwealth games", "asian games", "wrestling",
-        "kabaddi", "pro kabaddi", "formula 1", "grand prix", "chess",
-        "athlete", "gold medal", "silver medal", "bronze medal",
-        "nba", "isl league", "premier league", "champions league",
-        # Hindi (Devanagari)
-        "खेल", "फुटबॉल", "हॉकी", "बैडमिंटन", "कुश्ती", "कबड्डी",
-        "ओलंपिक", "स्वर्ण पदक", "रजत पदक",
-        # Tamil
-        "விளையாட்டு", "கால்பந்து", "ஹாக்கி",
-        # Telugu
-        "క్రీడలు", "ఫుట్‌బాల్", "హాకీ",
-        # Bengali
-        "খেলাধুলা", "ফুটবল", "হকি",
-    ],
-
-    # ── Health ────────────────────────────────────────────────────────────────
-    # Removed "who " (trailing space). "who" with \b matches "WHO" standalone.
-    # Removed "drug" — too ambiguous. Use "drug trial", "pharmaceutical" instead.
-    "health": [
-        # English
-        "hospital", "doctor", "medicine", "disease outbreak", "covid",
-        "vaccine", "health ministry", "aiims", "cancer", "diabetes",
-        "surgery", "epidemic", "pandemic", "WHO", "clinical trial",
-        "patient", "pharmaceutical", "health insurance", "mental health",
-        "dengue", "malaria", "tuberculosis", "ayushman bharat",
-        # Hindi (Devanagari)
-        "स्वास्थ्य", "अस्पताल", "डॉक्टर", "बीमारी", "दवाई", "कोविड",
-        "टीकाकरण", "इलाज", "मरीज",
-        # Tamil
-        "சுகாதாரம்", "மருத்துவமனை", "மருத்துவர்", "நோய்",
-        # Telugu
-        "ఆరోగ్యం", "ఆసుపత్రి", "వైద్యుడు", "వ్యాధి",
-        # Bengali
-        "স্বাস্থ্য", "হাসপাতাল", "ডাক্তার", "রোগ",
-    ],
-
-    # ── Education ─────────────────────────────────────────────────────────────
-    "education": [
-        # English
-        "school", "college", "university", "jee", "neet", "upsc", "ias",
-        "board exam", "cbse", "icse", "ugc", "iit", "iim", "scholarship",
-        "syllabus", "admission", "student protest", "education policy", "nep",
-        "exam result", "entrance exam", "higher education",
-        # Hindi (Devanagari)
-        "शिक्षा", "स्कूल", "कॉलेज", "परीक्षा", "विश्वविद्यालय", "छात्र",
-        "प्रवेश", "छात्रवृत्ति",
-        # Tamil
-        "கல்வி", "பள்ளி", "கல்லூரி", "தேர்வு",
-        # Telugu
-        "విద్య", "పాఠశాల", "కళాశాల", "పరీక్ష",
-        # Bengali
-        "শিক্ষা", "স্কুল", "কলেজ", "পরীক্ষা",
-    ],
-
-    # ── Crime ─────────────────────────────────────────────────────────────────
-    # Removed "ed " (trailing space). "ed" with \b matches standalone "ED".
-    "crime": [
-        # English
-        "murder", "rape", "assault", "arrested", "police", "fir", "court",
-        "judge", "verdict", "convicted", "bail", "chargesheet", "cbi",
-        "enforcement directorate", "scam", "fraud", "gangster", "kidnap",
-        "robbery", "terrorist", "accused", "crime scene", "death penalty",
-        # Hindi (Devanagari)
-        "हत्या", "गिरफ्तार", "पुलिस", "अदालत", "बलात्कार", "धोखाधड़ी",
-        "अपराध", "जमानत", "गैंगस्टर", "अपहरण",
-        # Tamil
-        "கொலை", "கைது", "போலீஸ்", "நீதிமன்றம்",
-        # Telugu
-        "హత్య", "అరెస్టు", "పోలీసు", "న్యాయస్థానం",
-        # Bengali
-        "হত্যা", "গ্রেপ্তার", "পুলিশ", "আদালত",
-    ],
-
-    # ── Environment ───────────────────────────────────────────────────────────
-    "environment": [
-        # English
-        "climate change", "pollution", "air quality", "aqi", "flood",
-        "drought", "cyclone", "earthquake", "wildlife", "forest fire",
-        "deforestation", "carbon emission", "renewable energy", "solar power",
-        "wind energy", "green energy", "environment ministry", "net zero",
-        "global warming", "glacier", "biodiversity",
-        # Hindi (Devanagari)
-        "पर्यावरण", "प्रदूषण", "बाढ़", "सूखा", "भूकंप", "चक्रवात",
-        "जलवायु परिवर्तन", "वन", "सौर ऊर्जा",
-        # Tamil
-        "சுற்றுச்சூழல்", "மாசுபாடு", "வெள்ளம்",
-        # Telugu
-        "పర్యావరణం", "కాలుష్యం", "వరదలు",
-        # Bengali
-        "পরিবেশ", "দূষণ", "বন্যা",
-    ],
-
-    # ── World ─────────────────────────────────────────────────────────────────
-    # Removed "un " (trailing space). "un" with \b matches standalone "UN".
-    # Removed "usa " — "usa" with \b is fine.
-    "world": [
-        # English
-        "united states", "usa", "white house", "china", "pakistan",
-        "russia", "ukraine", "europe", "nato", "united nations",
-        "g20", "g7", "foreign ministry", "diplomatic", "sanctions",
-        "border dispute", "international relations", "global summit",
-        "imf", "world bank", "un security council", "middle east",
-        "israel", "iran", "north korea",
-        # Hindi (Devanagari)
-        "अमेरिका", "चीन", "पाकिस्तान", "रूस", "अंतरराष्ट्रीय",
-        "विदेश मंत्रालय", "कूटनीति", "संयुक्त राष्ट्र",
-        # Tamil
-        "அமெரிக்கா", "சீனா", "பாகிஸ்தான்", "சர்வதேசம்",
-        # Telugu
-        "అమెరికా", "చైనా", "పాకిస్తాన్", "అంతర్జాతీయం",
-        # Bengali
-        "আমেরিকা", "চীন", "পাকিস্তান", "আন্তর্জাতিক",
-    ],
-}
-# Fallback when no category matches
-CATEGORY_DEFAULT = "general"
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP: IMAGE DOWNLOAD + PERCEPTUAL HASHING
@@ -482,3 +200,81 @@ SENTIMENT_POSITIVE_THRESHOLD = 0.40
 SENTIMENT_NEGATIVE_THRESHOLD = 0.40
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# WORK QUEUE (docs/enrichment_queue_migration.sql)
+#
+# ENRICH_CLAIM_LEASE_MINUTES:
+#   A claimed article is reserved for this long. If the runner dies, the claim
+#   expires and another run picks the article up. MUST exceed the longest run
+#   (enrich.yml timeout-minutes = 120), or a slow-but-alive run could have its
+#   articles re-claimed underneath it.
+#
+# ENRICH_MAX_ATTEMPTS:
+#   Claims per article before it is parked as a dead letter. An article whose
+#   processing kills the process (OOM, segfault in a native lib) would
+#   otherwise crash every run forever.
+#
+# ENRICH_TIME_BUDGET_MINUTES:
+#   Stop taking new articles after this long and release the unprocessed rest
+#   of the batch, so a run never gets killed by the job timeout mid-article.
+#   0 = no budget (local runs).
+# ─────────────────────────────────────────────────────────────────────────────
+ENRICH_CLAIM_LEASE_MINUTES = int(os.getenv("ENRICH_CLAIM_LEASE_MINUTES", "150"))
+ENRICH_MAX_ATTEMPTS        = int(os.getenv("ENRICH_MAX_ATTEMPTS",        "3"))
+ENRICH_TIME_BUDGET_MINUTES = float(os.getenv("ENRICH_TIME_BUDGET_MINUTES", "0"))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STORY CLUSTERING (docs/clustering_v2_migration.sql, docs/CLUSTERING.md)
+#
+# Every number below was calibrated on hand-labelled pairs of live Indian
+# headlines — see docs/CLUSTERING.md §Calibration and tools/cluster_eval/.
+# Re-run the calibration before changing the model or a threshold.
+#
+# CLUSTER_EMBEDDING_MODEL      sentence-embedding model (must be 768-dim and
+#                              listed in enrichment/steps/embedding.py)
+# CLUSTER_JOIN_THRESHOLD       cosine(article, cluster centroid) to join outright
+# CLUSTER_GRAY_THRESHOLD       lower bound of the "gray zone": joins only with
+#                              corroborating entity or image evidence
+# CLUSTER_ANCHOR_THRESHOLD     cosine(article, cluster SEED) floor — stops a
+#                              centroid drifting from one story into the next
+# CLUSTER_MIN_SHARED_ENTITIES  salient entities in common that count as evidence
+# CLUSTER_IMAGE_MAX_DISTANCE   pHash Hamming distance that counts as "same photo"
+# CLUSTER_MAX_GAP_HOURS        an article may join a story whose latest article
+#                              is at most this far away in time
+# CLUSTER_MAX_SPAN_HOURS       a story never spans more than this end-to-end
+# CLUSTER_MERGE_THRESHOLD      centroid↔centroid cosine for the maintenance merge
+# ─────────────────────────────────────────────────────────────────────────────
+CLUSTERING_ENABLED          = os.getenv("CLUSTERING_ENABLED", "true").lower() not in ("0", "false", "no")
+CLUSTER_EMBEDDING_MODEL     = os.getenv("CLUSTER_EMBEDDING_MODEL", "intfloat/multilingual-e5-base")
+CLUSTER_JOIN_THRESHOLD      = float(os.getenv("CLUSTER_JOIN_THRESHOLD",      "0.85"))
+CLUSTER_GRAY_THRESHOLD      = float(os.getenv("CLUSTER_GRAY_THRESHOLD",      "0.85"))
+CLUSTER_ANCHOR_THRESHOLD    = float(os.getenv("CLUSTER_ANCHOR_THRESHOLD",    "0.75"))
+CLUSTER_MIN_SHARED_ENTITIES = int(os.getenv("CLUSTER_MIN_SHARED_ENTITIES",   "2"))
+CLUSTER_IMAGE_MAX_DISTANCE  = int(os.getenv("CLUSTER_IMAGE_MAX_DISTANCE",    "6"))
+CLUSTER_MAX_GAP_HOURS       = int(os.getenv("CLUSTER_MAX_GAP_HOURS",         "18"))
+CLUSTER_MAX_SPAN_HOURS      = int(os.getenv("CLUSTER_MAX_SPAN_HOURS",        "120"))
+CLUSTER_CANDIDATES          = int(os.getenv("CLUSTER_CANDIDATES",            "5"))
+CLUSTER_MERGE_THRESHOLD     = float(os.getenv("CLUSTER_MERGE_THRESHOLD",     "0.845"))
+
+# Embedding input: headline + description/lead, capped (see steps/embedding.py)
+EMBED_MAX_CHARS  = int(os.getenv("EMBED_MAX_CHARS",  "400"))
+EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "32"))
+
+# Entities used as clustering evidence: salient, specific types only.
+CLUSTER_ENTITY_MIN_SALIENCE = 0.3
+CLUSTER_ENTITY_TYPES        = frozenset({"PERSON", "ORG", "GPE", "EVENT", "LAW", "PRODUCT"})
+# Entities that co-occur with almost every Indian story (or are the wire
+# agency's own byline) — shared mentions of these are NOT evidence of
+# being the same story.
+CLUSTER_ENTITY_STOPLIST = frozenset({
+    "india", "indian", "indians", "bharat", "new delhi", "delhi",
+    "centre", "government", "govt", "the government", "union government",
+    "pti", "ani", "ians", "reuters", "afp", "ap", "uni", "bloomberg",
+    "x", "twitter", "facebook", "instagram", "youtube", "whatsapp",
+    "today", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "भारत", "दिल्ली", "सरकार", "केंद्र",
+})
+# Perceptual hashes of blank / solid-colour images (all bits equal) carry no
+# information — never use them as evidence.
+CLUSTER_IMAGE_HASH_DENYLIST = frozenset({0, -1})

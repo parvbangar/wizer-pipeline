@@ -85,7 +85,10 @@ def analyse_sentiment(
     # Title + description is where sentiment signal is strongest in news.
     # We pass up to ~1000 chars (≈200 tokens) — well within the 512-token limit.
     # truncation=True ensures the pipeline handles long inputs safely.
-    text = f"{title or ''}. {description or ''}".strip()
+    # Join only the parts that exist: f"{title}. {description}" is "." when
+    # both are empty — never falsy — so the empty guard below never fired and
+    # the model was run on a lone full stop.
+    text = ". ".join(p.strip() for p in (title, description) if p and p.strip())
     if not text:
         return null_result
 

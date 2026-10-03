@@ -31,6 +31,56 @@ CREATE INDEX IF NOT EXISTS pipeline_runs_run_at_idx
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
+-- STEP 1b: Create the feeds table if it does not exist yet
+--
+-- Existing deployments already have this table (CREATE ... IF NOT EXISTS is then
+-- a no-op; docs/ingestion_fixes_migration.sql adds any missing columns).
+-- A fresh database needs it BEFORE the articles table, which references it.
+--
+-- Columns are derived from what pipeline/*.py reads/writes and what
+-- push_feeds.py upserts.  feed_url is UNIQUE because push_feeds upserts with
+-- on_conflict=feed_url.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS feeds (
+  id                    uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  feed_url              text        NOT NULL UNIQUE,
+  final_url             text,
+  domain                text,
+  publisher_name        text,
+  publisher_type        text,
+  country_code          text,
+  country_name          text,
+  language_code         text,
+  language_name         text,
+  iab_tier1             text,
+  iab_tier2             text,
+  update_cadence        text        DEFAULT 'unknown',  -- breaking_news / multiple_daily / daily /
+                                                        -- several_weekly / weekly / monthly / unknown
+  validation_tier       text,
+  political_lean        text,
+  audience_type         text,
+  feed_format           text,
+  feed_type             text,
+  has_paywall           boolean     NOT NULL DEFAULT false,
+  is_satire             boolean     NOT NULL DEFAULT false,
+  priority_score        float,
+  freshness_score       float,
+  avg_items_per_day     float,
+  metadata_confidence   float,
+  poll_interval_mins    integer,
+  is_active             boolean     NOT NULL DEFAULT true,
+  fail_count            integer     NOT NULL DEFAULT 0,
+  articles_found        integer     NOT NULL DEFAULT 0,
+  last_polled_at        timestamptz,
+  last_success_at       timestamptz,
+  last_new_article_at   timestamptz,  -- only advanced when a poll inserts >0 articles
+  disabled_reason       text,         -- 'dormant' | 'errors' | NULL
+  created_at            timestamptz NOT NULL DEFAULT now()
+);
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
 -- STEP 2: Create the articles table with YOUR exact column schema
 -- ─────────────────────────────────────────────────────────────────────────────
 
@@ -254,6 +304,10 @@ SELECT * FROM pipeline_runs ORDER BY run_at DESC LIMIT 100;
 --   We keep the old 'tier' column so historical rows are not lost.
 -- ─────────────────────────────────────────────────────────────────────────────
 
+-- 'tier' is the legacy name of 'cadence'.  The CREATE TABLE in Step 1 does not
+-- define it, so add it here (before the backfill below references it).  The
+-- pipeline code writes both columns and tolerates either being absent.
+ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS tier text;
 ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS cadence text;
 
 -- Backfill historical rows so old data is still queryable
