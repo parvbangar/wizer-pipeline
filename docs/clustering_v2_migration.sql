@@ -818,7 +818,13 @@ LANGUAGE sql
 STABLE
 SET search_path = public, extensions
 AS $$
-  SELECT a.id, a.title, a.description, left(a.full_text, 1500), a.domain,
+  -- The body is only read when the description can't stand in for it (the
+  -- same rule build_embedding_text applies): left() on a compressed TOAST
+  -- value decompresses the WHOLE body, which made this page take ~17 s on the
+  -- production Micro instance.
+  SELECT a.id, a.title, a.description,
+         CASE WHEN length(coalesce(a.description, '')) < 40 THEN left(a.full_text, 1500) END,
+         a.domain,
          a.language_code::text, a.language_detected, a.published_at, a.image_phash
     FROM articles AS a
    WHERE a.published_at >= p_since

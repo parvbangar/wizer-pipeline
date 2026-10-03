@@ -35,8 +35,13 @@ _client: Client | None = None
 # Default postgrest timeout is 120 s — long enough that an idle TCP connection
 # (dropped by OS/Supabase after ~2 min of NLP work) causes every write to hang
 # for the full 2 min before raising ReadTimeout.
-# 20 s is generous for any real write while failing fast on dead connections.
-_DB_TIMEOUT_SECONDS = 20
+# (Previously 20 s, to fail fast on dead connections — see below.)
+# 45 s: above the server's 30 s statement_timeout, so a slow-but-valid query on
+# the small production instance is not abandoned by the client first (the
+# first production clustering run timed out at 20 s on a 17 s query). Dead
+# idle connections — the original reason for a short timeout — are avoided by
+# the idle reconnect below instead.
+_DB_TIMEOUT_SECONDS = 45
 
 # A pooled HTTP connection that sat idle while models ran is often silently
 # dropped by the network (NAT / load-balancer idle timeouts). The next request

@@ -195,7 +195,7 @@ def main() -> int:
         b = sub.add_parser(name, help=help_text)
         b.add_argument("--hours", type=int, default=12 if name == "run" else 72,
                        help="look back this far (default: run 12, backfill 72)")
-        b.add_argument("--batch", type=int, default=500, help="articles per fetch/embed page")
+        b.add_argument("--batch", type=int, default=200, help="articles per fetch/embed page")
         b.add_argument("--limit", type=int, default=200_000, help="stop after this many articles")
         b.add_argument("--time-budget", type=float, default=0,
                        help="minutes after which to stop cleanly (0 = no limit)")
