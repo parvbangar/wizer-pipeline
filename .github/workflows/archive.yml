@@ -24,6 +24,10 @@ on:
         required: false
         default: "false"
 
+permissions:
+  contents: read
+  issues: write
+
 concurrency:
   group: article-archive
   cancel-in-progress: false
@@ -52,3 +56,26 @@ jobs:
       - name: Archive status
         if: always()
         run: python archive.py status --last 10
+      - name: Notify when the backlog is done
+        # After the one-off backlog (2026-04-09 .. hot window) is archived, each
+        # night only has ~1 new day to move. At that point open ONE issue so the
+        # operator knows the database is small again and the paused pipeline
+        # can be resumed. Never changes workflow state by itself.
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          LEFT=$(python -c "from archiver import db; import os; print(len(db.pending_days(int(os.environ.get('ARCHIVE_HOT_DAYS', '30')))))")
+          echo "days still to archive: $LEFT"
+          if [ "$LEFT" -le 1 ]; then
+            TITLE="Archive backlog complete - resume the pipeline"
+            if [ "$(gh issue list -R "$REPO" --state open --search "$TITLE in:title" --json number --jq 'length')" = "0" ]; then
+              gh issue create -R "$REPO" --title "$TITLE" --body "The nightly archive has moved every article older than the hot window to Parquet in the \`article-archive\` bucket and deleted it from Postgres (see \`python archive.py status\`).
+
+          Next steps:
+          1. Optional: reclaim disk space with \`VACUUM (FULL, ANALYZE) articles; VACUUM (FULL, ANALYZE) article_entities;\` during a quiet hour (docs/MIGRATIONS.md).
+          2. Resume the paused workflows: ingestion (6), Story clustering, Metadata Enrichment, Cluster maintenance.
+          3. Close this issue."
+            fi
+          fi
