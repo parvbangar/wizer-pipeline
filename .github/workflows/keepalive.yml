@@ -1,0 +1,36 @@
+name: Keep scheduled workflows alive
+
+# GitHub DISABLES every scheduled workflow of a repository that has had no
+# commit for 60 days ("disabled_inactivity"). That is exactly what stopped this
+# pipeline on 2026-06-07: 60 days after the last commit (2026-04-07), all six
+# ingestion workflows and enrichment were switched off, and nothing ran for
+# four months.
+#
+# Re-enabling a workflow through the API resets its inactivity timer. This job
+# does that weekly for every workflow in the repo — including itself, so it
+# can never lapse either.
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Re-enable every workflow (resets the 60-day timer)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/actions/workflows" --paginate \
+            --jq '.workflows[] | "\(.id)\t\(.state)\t\(.name)"' |
+          while IFS=$'\t' read -r id state name; do
+            gh api -X PUT "repos/$REPO/actions/workflows/$id/enable" >/dev/null
+            echo "enabled  [$state → active]  $name"
+          done
