@@ -10,10 +10,12 @@ up with every ingested article (~50K/day) while NLP enrichment covers what it
 can. enrich.py still clusters any article it enriches that the job has not
 reached yet.
 
-  run        Cluster every article that has no cluster yet (published in the
-             last --hours), oldest first, in batches. This is the scheduled job
-             (.github/workflows/cluster.yml, every 30 min). It does not wait for
-             NLP enrichment, so ALL ingested articles are clustered.
+  run        With --memory: cluster every article without a cluster IN MEMORY
+             (enrichment/cluster_job.py) and write the result in bulk — the
+             normal path (.github/workflows/process.yml). --state FILE is the
+             cached cluster state, --bodies DIR the ingest hand-off.
+             Without --memory: the SQL path — wizer_assign_cluster per article
+             (published in the last --hours), oldest first.
   backfill   Same as `run` with a 72 h default look-back — for catching up.
 
   maintain   Merge twin clusters, reconcile counts with member articles, and
@@ -73,6 +75,20 @@ def cmd_run(args) -> int:
     NOT wait for NLP enrichment: every ingested article — any language, any
     length — gets its story, so outlet_count counts every outlet.
     """
+    if getattr(args, "memory", False):
+        from enrichment.cluster_job import run_memory_clustering
+        bodies = {}
+        if args.bodies:
+            from pipeline.handoff import find_files, read
+            bodies = {int(r["id"]): r.get("full_text") for r in read(find_files(args.bodies))
+                      if r.get("full_text")}
+            log.info("Bodies from hand-off files: %d", len(bodies))
+        if args.dry_run:
+            return 0
+        run_memory_clustering(args.state, bodies, since_hours=args.hours, page=args.batch,
+                              limit=args.limit, time_budget_minutes=args.time_budget)
+        return 0
+
     from enrichment import db
     from enrichment.clustering import assign_clusters_batch
     from enrichment.steps.embedding import build_embedding_text, embed_texts
@@ -200,6 +216,12 @@ def main() -> int:
         b.add_argument("--time-budget", type=float, default=0,
                        help="minutes after which to stop cleanly (0 = no limit)")
         b.add_argument("--dry-run", action="store_true")
+        b.add_argument("--memory", action="store_true",
+                       help="cluster in memory and write in bulk (the normal path; see cluster_job.py)")
+        b.add_argument("--state", default=None,
+                       help="with --memory: cluster state file to load/save (cache)")
+        b.add_argument("--bodies", default=None,
+                       help="with --memory: hand-off file/directory whose bodies improve the embedding text")
 
     m = sub.add_parser("maintain", help="merge twins, reconcile counts, prune orphans")
     m.add_argument("--lookback-hours", type=int, default=6,

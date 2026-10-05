@@ -486,3 +486,106 @@ class TestDbOutage:
         with pytest.raises(SystemExit) as ei:
             main.main()
         assert ei.value.code == 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BATCHED FEED STATE + HAND-OFF (docs/bulk_io_migration.sql, pipeline/handoff.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _poll_batched(feed, polls, handoff):
+    async def go():
+        loop = asyncio.get_running_loop()
+        return await poller.poll_one_feed(
+            feed, asyncio.Semaphore(2), asyncio.Semaphore(2), set(), loop,
+            polls=polls, handoff=handoff,
+        )
+    return asyncio.run(go())
+
+
+def _crawl_with_body(entry, feed, norm, h, sh):
+    a = _fake_crawl(entry, feed, norm, h, sh)
+    a.full_text = "Body of " + entry["title"]
+    return a
+
+
+class TestBatchedPoll:
+
+    def _returning(self, monkeypatch, sent):
+        def upsert_returning(rows):
+            sent.extend(rows)
+            # production returns url_hash as a space-padded char(32)
+            return [dict(r, id=100 + i, url_hash=f"{r['url_hash']:<32}") for i, r in enumerate(rows)], 0
+        monkeypatch.setattr(db, "upsert_articles_returning", upsert_returning)
+
+    def test_body_goes_to_handoff_not_database(self, rec, monkeypatch):
+        from pipeline.handoff import Handoff
+        monkeypatch.setattr(poller, "_fetch_rss_blocking", lambda url: (_entries(2), {}, None))
+        monkeypatch.setattr(poller, "crawl_article", _crawl_with_body)
+        monkeypatch.setattr(poller, "STORE_FULL_TEXT", False)
+        sent = []
+        self._returning(monkeypatch, sent)
+        polls, handoff = db.FeedPollBatch(), Handoff()
+        res = _poll_batched(_feed(), polls, handoff)
+        assert res["new"] == 2
+        assert all("full_text" not in r for r in sent)                  # not stored in Postgres
+        assert sorted(r["full_text"] for r in handoff.records) == ["Body of Title 0", "Body of Title 1"]
+        assert {r["id"] for r in handoff.records} == {100, 101} and handoff.unmatched == 0
+        assert polls.items == [{"id": "f1", "success": True, "new_articles": 2,
+                                "reactivate": False, "dormant": False}]
+        assert rec.feed_updates == []                                    # nothing per feed
+
+    def test_store_full_text_keeps_body_in_row(self, rec, monkeypatch):
+        from pipeline.handoff import Handoff
+        monkeypatch.setattr(poller, "_fetch_rss_blocking", lambda url: (_entries(1), {}, None))
+        monkeypatch.setattr(poller, "crawl_article", _crawl_with_body)
+        monkeypatch.setattr(poller, "STORE_FULL_TEXT", True)
+        sent = []
+        self._returning(monkeypatch, sent)
+        _poll_batched(_feed(), db.FeedPollBatch(), Handoff())
+        assert sent[0]["full_text"] == "Body of Title 0"
+
+    def test_failure_and_dormancy_are_batched(self, rec, monkeypatch):
+        polls = db.FeedPollBatch()
+        monkeypatch.setattr(poller, "_fetch_rss_blocking", lambda url: ([], {}, "HTTP 500"))
+        _poll_batched(_feed(id="bad"), polls, None)
+        monkeypatch.setattr(poller, "_fetch_rss_blocking", lambda url: ([], {}, None))
+        _poll_batched(_feed(id="stale", last_new_article_at="2000-01-01T00:00:00+00:00"), polls, None)
+        assert polls.items == [
+            {"id": "bad", "success": False, "new_articles": 0, "reactivate": False, "dormant": False},
+            {"id": "stale", "success": True, "new_articles": 0, "reactivate": False, "dormant": True},
+        ]
+        assert rec.feed_updates == [] and rec.dormant == []
+
+    def test_flush_falls_back_per_feed_when_rpc_missing(self, rec, monkeypatch):
+        class C:
+            def rpc(self, name, params):
+                class R:
+                    def execute(self_inner):
+                        raise RuntimeError("Could not find the function public.wizer_record_feed_polls")
+                return R()
+        monkeypatch.setattr(db, "get_client", lambda: C())
+        polls = db.FeedPollBatch()
+        polls.add("f1", True, 3)
+        polls.add("f2", True, 0, dormant=True)
+        assert polls.flush() == 2
+        assert [a for a, _ in rec.feed_updates] == [("f1", True, 3, "", False), ("f2", True, 0, "", False)]
+        assert [d[0] for d in rec.dormant] == ["f2"]
+
+    def test_flush_chunks(self, monkeypatch):
+        calls = []
+
+        class C:
+            def rpc(self, name, params):
+                calls.append(len(params["p_items"]))
+
+                class R:
+                    data = len(params["p_items"])
+
+                    def execute(self_inner):
+                        return self_inner
+                return R()
+        monkeypatch.setattr(db, "get_client", lambda: C())
+        polls = db.FeedPollBatch(batch_size=2)
+        for i in range(5):
+            polls.add(f"f{i}", True)
+        assert polls.flush() == 5 and calls == [2, 2, 1] and polls.items == []

@@ -55,8 +55,12 @@ DROP INDEX IF EXISTS articles_enrich_queue_idx;
 --   p_retry_hours    a dead letter is retried once per this many hours …
 --   p_max_retries    … at most this many extra times, then it is given up
 --                    (enrichment_queue_health.given_up)
+--   p_min_age_minutes only articles ingested at least this long ago: the
+--                    SWEEPER passes this, so it leaves fresh articles to the
+--                    hand-off runners that already hold their body
+--                    (docs/bulk_io_migration.sql, enrichment/handoff_runner.py)
 --
--- The signature changed (two new parameters), so v1 is dropped first —
+-- The signature changed (new parameters), so v1 is dropped first —
 -- CREATE OR REPLACE cannot add parameters to an existing function.
 -- ─────────────────────────────────────────────────────────────────────────────
 DROP FUNCTION IF EXISTS wizer_claim_enrichment_batch(integer, integer, integer, integer);
@@ -67,7 +71,8 @@ CREATE OR REPLACE FUNCTION wizer_claim_enrichment_batch(
   p_lease_minutes  integer DEFAULT 150,
   p_max_attempts   integer DEFAULT 3,
   p_retry_hours    integer DEFAULT 24,
-  p_max_retries    integer DEFAULT 7
+  p_max_retries    integer DEFAULT 7,
+  p_min_age_minutes integer DEFAULT 0
 )
 RETURNS SETOF articles
 LANGUAGE sql
@@ -84,6 +89,7 @@ AS $$
               AND q.title IS NOT NULL
               AND (p_max_age_hours <= 0
                    OR coalesce(q.crawled_at, q.created_at) > now() - make_interval(hours => p_max_age_hours))
+              AND coalesce(q.crawled_at, q.created_at) <= now() - make_interval(mins => greatest(p_min_age_minutes, 0))
               AND (q.enrich_claimed_at IS NULL
                    OR q.enrich_claimed_at < now() - make_interval(mins => p_lease_minutes))
               AND (q.enrich_attempts < p_max_attempts
@@ -175,7 +181,7 @@ DECLARE
   fn text;
 BEGIN
   FOREACH fn IN ARRAY ARRAY[
-    'wizer_claim_enrichment_batch(integer, integer, integer, integer, integer, integer)',
+    'wizer_claim_enrichment_batch(integer, integer, integer, integer, integer, integer, integer)',
     'wizer_enrichment_queue_depth(integer, integer)'
   ] LOOP
     EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC', fn);

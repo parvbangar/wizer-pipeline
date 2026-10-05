@@ -265,6 +265,11 @@ CLUSTER_MAX_GAP_HOURS       = int(os.getenv("CLUSTER_MAX_GAP_HOURS",         "18
 CLUSTER_MAX_SPAN_HOURS      = int(os.getenv("CLUSTER_MAX_SPAN_HOURS",        "120"))
 CLUSTER_CANDIDATES          = int(os.getenv("CLUSTER_CANDIDATES",            "5"))
 CLUSTER_MERGE_THRESHOLD     = float(os.getenv("CLUSTER_MERGE_THRESHOLD",     "0.845"))
+# In-memory clustering (enrichment/memory_clustering.py): clusters last seen
+# longer ago than this are dropped from the runner's state. A fresh article
+# can only join a cluster seen within CLUSTER_MAX_GAP_HOURS of its time, so
+# gap + a margin for publish-to-crawl delay is enough.
+CLUSTER_STATE_RETAIN_HOURS  = int(os.getenv("CLUSTER_STATE_RETAIN_HOURS",    "30"))
 
 # Embedding input: headline + description/lead, capped (see steps/embedding.py)
 EMBED_MAX_CHARS  = int(os.getenv("EMBED_MAX_CHARS",  "400"))

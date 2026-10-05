@@ -211,11 +211,16 @@ def enrich_one(
         log.warning("[%s] summarization failed: %s", article_id, e)
 
     # ── Step 9: Image pHash ───────────────────────────────────────────────────
-    try:
-        image_phash = download_and_hash_image(image_url)
-        update["image_phash"] = image_phash
-    except Exception as e:
-        log.warning("[%s] image hashing failed: %s", article_id, e)
+    # The hand-off runner downloads images in a thread pool ahead of the CPU
+    # work and passes the hash in as "_image_phash" (enrichment/handoff_runner.py).
+    if "_image_phash" in article:
+        update["image_phash"] = article["_image_phash"]
+    else:
+        try:
+            image_phash = download_and_hash_image(image_url)
+            update["image_phash"] = image_phash
+        except Exception as e:
+            log.warning("[%s] image hashing failed: %s", article_id, e)
 
     return update, entities
 
@@ -305,9 +310,13 @@ def run_enrichment(
     force: bool     = False,
     offset: int     = 0,
     time_budget_minutes: float = ENRICH_TIME_BUDGET_MINUTES,
+    min_age_hours: float = 0,
 ) -> dict:
     """
     Main entry point: claim a batch, enrich + cluster each article, persist.
+
+    min_age_hours > 0 is the SWEEPER: only articles ingested at least that long
+    ago are claimed (fresher ones belong to the hand-off runners).
 
     Args:
       batch_size:          articles to process in this run
@@ -345,7 +354,7 @@ def run_enrichment(
     try:
         # ── Fetch / claim ────────────────────────────────────────────────────
         if use_queue:
-            articles = db.claim_batch(batch_size)
+            articles = db.claim_batch(batch_size, min_age_hours=min_age_hours) if min_age_hours                 else db.claim_batch(batch_size)
         elif force:
             articles = db.fetch_unenriched_batch_forced(batch_size, offset=offset)
         else:

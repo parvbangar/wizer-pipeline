@@ -82,6 +82,50 @@ $$;
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
+-- 2b. wizer_fetch_unclustered_ingested — the in-memory clusterer's work list
+--
+-- Every article without a cluster INGESTED since p_since, oldest first,
+-- keyset-paged on (ingestion time, id). Keyed on ingestion time, not
+-- published_at (wizer_fetch_unclustered): an undated or stale-dated article
+-- must still get its story. No body: it is not stored in Postgres any more —
+-- the job overlays bodies from the ingest hand-off where it has them.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE INDEX IF NOT EXISTS articles_unclustered_ingested_idx
+  ON articles ((coalesce(crawled_at, created_at)), id)
+  WHERE cluster_id IS NULL AND title IS NOT NULL;
+
+CREATE OR REPLACE FUNCTION wizer_fetch_unclustered_ingested(
+  p_since     timestamptz,
+  p_limit     integer     DEFAULT 500,
+  p_after_ts  timestamptz DEFAULT '-infinity',
+  p_after_id  bigint      DEFAULT 0
+)
+RETURNS TABLE (
+  id            bigint,
+  title         text,
+  description   text,
+  domain        text,
+  language_code text,
+  published_at  timestamptz,
+  ingested_at   timestamptz
+)
+LANGUAGE sql
+STABLE
+SET search_path = public, extensions
+AS $$
+  SELECT a.id, a.title, a.description, a.domain, a.language_code::text,
+         a.published_at, coalesce(a.crawled_at, a.created_at)
+    FROM articles AS a
+   WHERE a.cluster_id IS NULL
+     AND a.title IS NOT NULL
+     AND coalesce(a.crawled_at, a.created_at) >= p_since
+     AND (coalesce(a.crawled_at, a.created_at), a.id) > (p_after_ts, p_after_id)
+   ORDER BY coalesce(a.crawled_at, a.created_at), a.id
+   LIMIT greatest(p_limit, 1);
+$$;
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
 -- 3. wizer_apply_cluster_changes — write the in-memory clusterer's result
 --
 --   p_clusters  [{id, is_new, centroid_sum, article_count, outlet_set,
@@ -348,6 +392,7 @@ BEGIN
   FOREACH fn IN ARRAY ARRAY[
     'wizer_db_now()',
     'wizer_cluster_state(text, timestamptz, timestamptz, integer, uuid)',
+    'wizer_fetch_unclustered_ingested(timestamptz, integer, timestamptz, bigint)',
     'wizer_apply_cluster_changes(text, jsonb, jsonb)',
     'wizer_save_enrichment_batch(jsonb)',
     'wizer_record_feed_polls(jsonb, integer)'

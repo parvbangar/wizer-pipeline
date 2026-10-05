@@ -79,7 +79,9 @@ from pipeline.config import (
     LEGACY_URL_HASH_CHECK,
     FEED_COL_ID, FEED_COL_URL, FEED_COL_FINAL_URL,
     FEED_COL_CADENCE, FEED_COL_FAIL_COUNT,
+    HANDOFF_PATH, STORE_FULL_TEXT, MAX_ARTICLE_BODY_CHARS,
 )
+from pipeline.handoff import Handoff
 from pipeline.crawler import CrawledArticle, crawl_article, reset_domain_failures
 from pipeline.dedup import (
     normalise_url, url_hash, legacy_url_hash, simhash, is_near_duplicate,
@@ -358,10 +360,18 @@ async def poll_one_feed(
     article_sem: asyncio.Semaphore,
     seen_simhashes: set[int],    # shared across all feeds in this run
     loop:        asyncio.AbstractEventLoop,
+    polls:       "db.FeedPollBatch | None" = None,
+    handoff:     Handoff | None = None,
 ) -> dict:
     """
     Poll a single feed end-to-end.
     Returns a stats dict: {new: int, duplicates: int, errors: int}
+
+    polls:   record the feed's outcome in this batch (written once per run)
+             instead of updating the feed row right away.
+    handoff: collect the inserted articles WITH their body for the processing
+             jobs (pipeline/handoff.py); the body is then only stored in
+             Postgres if STORE_FULL_TEXT.
     """
     feed_id  = str(feed[FEED_COL_ID])
     feed_url = feed.get(FEED_COL_FINAL_URL) or feed[FEED_COL_URL]
@@ -398,10 +408,13 @@ async def poll_one_feed(
 
         if err_msg and not entries:
             # Complete failure — record it
-            await loop.run_in_executor(
-                None, db.update_feed_after_poll,
-                feed_id, False, 0, err_msg,
-            )
+            if polls is not None:
+                polls.add(feed_id, success=False)
+            else:
+                await loop.run_in_executor(
+                    None, db.update_feed_after_poll,
+                    feed_id, False, 0, err_msg,
+                )
             # Log circuit state (warning at 3 fails, error at 5 fails)
             current_fails = int(feed.get(FEED_COL_FAIL_COUNT) or 0) + 1
             log_circuit_state(feed_id, feed_url, current_fails)
@@ -430,6 +443,7 @@ async def poll_one_feed(
 
         # ── COLLECT VALID ARTICLES ────────────────────────────────────────────
         to_insert: list[dict] = []
+        new_articles: list[CrawledArticle] = []
         near_dups      = 0
         entry_errors   = 0    # entries whose processing raised
         exact_dups     = 0    # skipped: URL already seen (memory or DB)
@@ -449,7 +463,8 @@ async def poll_one_feed(
             elif r is None:
                 exact_dups += 1
             else:
-                to_insert.append(r.to_db_row())
+                to_insert.append(r.to_db_row(include_full_text=STORE_FULL_TEXT or handoff is None))
+                new_articles.append(r)
                 if r.is_duplicate:
                     near_dups += 1
 
@@ -460,9 +475,16 @@ async def poll_one_feed(
         inserted = 0
 
         if to_insert:
-            inserted, db_dups = await loop.run_in_executor(
-                None, db.upsert_articles, to_insert
-            )
+            if handoff is not None:
+                inserted_rows, db_dups = await loop.run_in_executor(
+                    None, db.upsert_articles_returning, to_insert
+                )
+                inserted = len(inserted_rows)
+                handoff.add_inserted(inserted_rows, new_articles)
+            else:
+                inserted, db_dups = await loop.run_in_executor(
+                    None, db.upsert_articles, to_insert
+                )
             exact_dups += db_dups
             # Rows that failed to insert (neither inserted nor conflict-skipped)
             entry_errors += max(len(to_insert) - inserted - db_dups, 0)
@@ -476,10 +498,12 @@ async def poll_one_feed(
         # ── UPDATE FEED STATE ─────────────────────────────────────────────────
         # A dormant feed that just produced an article wakes up again.
         reactivate = dormant_recheck and inserted > 0
-        await loop.run_in_executor(
-            None, db.update_feed_after_poll,
-            feed_id, True, inserted, "", reactivate,
-        )
+        if polls is None:
+            await loop.run_in_executor(
+                None, db.update_feed_after_poll,
+                feed_id, True, inserted, "", reactivate,
+            )
+        dormant = False
 
         # ── DORMANCY CHECK ────────────────────────────────────────────────────
         # Only when this poll found nothing: a feed that just inserted articles
@@ -496,10 +520,16 @@ async def poll_one_feed(
             else:
                 last_new = get_last_new_article_date(feed)
                 dormant, reason = check_dormancy(feed, last_new)
-                if dormant:
+                if dormant and polls is None:
                     await loop.run_in_executor(
                         None, db.mark_feed_dormant, feed_id, reason,
                     )
+                elif dormant:
+                    log.warning("DORMANT: feed %s marked inactive. Reason: %s", feed_id, reason)
+
+        if polls is not None:
+            polls.add(feed_id, success=True, new_articles=inserted,
+                      reactivate=reactivate, dormant=dormant)
 
         return {
             "new":        inserted,
@@ -551,6 +581,11 @@ async def run_pipeline(cadence: str | None = None, dry_run: bool = False) -> dic
     if not dry_run:
         run_id = await loop.run_in_executor(None, log_run_start, cadence, dry_run)
 
+    # Feed outcomes are written once at the end (dry runs keep the patched
+    # per-feed no-ops); inserted articles + bodies go to the hand-off file.
+    polls   = db.FeedPollBatch() if not dry_run else None
+    handoff = Handoff(MAX_ARTICLE_BODY_CHARS) if (HANDOFF_PATH and not dry_run) else None
+
     summary = {
         "cadence":         cadence or "all",
         "feeds_attempted": 0,
@@ -590,7 +625,8 @@ async def run_pipeline(cadence: str | None = None, dry_run: bool = False) -> dic
 
         # Launch all feed polls concurrently
         tasks = [
-            poll_one_feed(feed, feed_sem, article_sem, seen_simhashes, loop)
+            poll_one_feed(feed, feed_sem, article_sem, seen_simhashes, loop,
+                          polls=polls, handoff=handoff)
             for feed in feeds
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -640,6 +676,13 @@ async def run_pipeline(cadence: str | None = None, dry_run: bool = False) -> dic
                 log.info("Article cap: pruned %d oldest articles to stay under 500K", pruned)
 
     finally:
+        # Feed state and the hand-off are written even after a crash: every
+        # article that WAS inserted must reach enrichment with its body.
+        if polls is not None and polls.items:
+            n = await loop.run_in_executor(None, polls.flush)
+            log.info("Recorded poll outcomes for %d feeds", n)
+        if handoff is not None:
+            summary["handoff_articles"] = handoff.write(HANDOFF_PATH)
         # Always update the DB record — even if the run was killed or crashed
         if not dry_run:
             summary["duration_s"] = round(time.perf_counter() - run_start, 2)

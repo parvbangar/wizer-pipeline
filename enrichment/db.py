@@ -324,6 +324,7 @@ def claim_batch(
     max_attempts: int = ENRICH_MAX_ATTEMPTS,
     retry_hours: int = ENRICH_RETRY_HOURS,
     max_retries: int = ENRICH_MAX_RETRIES,
+    min_age_hours: float = 0,
 ) -> list[dict]:
     """
     Atomically lease up to `limit` unenriched articles for this runner.
@@ -348,6 +349,7 @@ def claim_batch(
             "p_max_attempts":   max_attempts,
             "p_retry_hours":    retry_hours,
             "p_max_retries":    max_retries,
+            "p_min_age_minutes": int(round(min_age_hours * 60)),
         }).execute())
         rows = resp.data or []
         claimed.extend(rows)
@@ -411,6 +413,54 @@ def mark_enrichment_failed(article_id, error: str) -> bool:
     except Exception as e:
         log.error("mark_enrichment_failed failed for %s: %s", article_id, e)
         return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BULK I/O — docs/bulk_io_migration.sql
+#
+# Every call below is idempotent, so _run_with_retry's single retry after a
+# timeout can never double-apply anything.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def db_now() -> str:
+    """The database clock (bookmark for cluster-state delta syncs)."""
+    resp = _run_with_retry(lambda: get_client().rpc("wizer_db_now", {}).execute())
+    return str(resp.data)
+
+
+def fetch_cluster_state(**params) -> list[dict]:
+    """One page of wizer_cluster_state (named p_* arguments). Raises on failure."""
+    resp = _run_with_retry(lambda: get_client().rpc("wizer_cluster_state", params).execute())
+    return resp.data or []
+
+
+def fetch_unclustered_ingested(since: str, limit: int, after_ts: str | None, after_id: int | None) -> list[dict]:
+    """One page of articles without a cluster, oldest ingested first. Raises on failure."""
+    params = {"p_since": since, "p_limit": limit}
+    if after_ts is not None:
+        params.update({"p_after_ts": after_ts, "p_after_id": after_id or 0})
+    resp = _run_with_retry(lambda: get_client().rpc("wizer_fetch_unclustered_ingested", params).execute())
+    return resp.data or []
+
+
+def apply_cluster_changes(model: str, clusters: list[dict], articles: list[dict]) -> dict:
+    """Write in-memory clustering results; returns {clusters_written, articles_written, synced_at}. Raises."""
+    resp = _run_with_retry(lambda: get_client().rpc("wizer_apply_cluster_changes", {
+        "p_model": model, "p_clusters": clusters, "p_articles": articles,
+    }).execute())
+    rows = resp.data or []
+    if not rows:
+        raise RuntimeError("wizer_apply_cluster_changes returned no row")
+    return rows[0]
+
+
+def save_enrichment_batch(items: list[dict]) -> int:
+    """Save many articles' enrichment in one call; returns rows updated. Raises on failure."""
+    if not items:
+        return 0
+    resp = _run_with_retry(lambda: get_client().rpc(
+        "wizer_save_enrichment_batch", {"p_items": items}).execute())
+    return int(resp.data or 0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

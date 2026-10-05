@@ -556,9 +556,9 @@ class TestMaintenance:
 # Work queue
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _claim(conn, limit=10, age=0, lease=150, attempts=3, retry=24, retries=7) -> list[int]:
-    rows = conn.execute("SELECT id FROM wizer_claim_enrichment_batch(%s, %s, %s, %s, %s, %s)",
-                        (limit, age, lease, attempts, retry, retries)).fetchall()
+def _claim(conn, limit=10, age=0, lease=150, attempts=3, retry=24, retries=7, min_age=0) -> list[int]:
+    rows = conn.execute("SELECT id FROM wizer_claim_enrichment_batch(%s, %s, %s, %s, %s, %s, %s)",
+                        (limit, age, lease, attempts, retry, retries, min_age)).fetchall()
     conn.commit()
     return sorted(r[0] for r in rows)
 
@@ -587,7 +587,7 @@ class TestQueue:
         newest = add_article(conn, ingested=now - timedelta(minutes=1))
         oldest = add_article(conn, ingested=now - timedelta(days=5), published=now)
         middle = add_article(conn, ingested=now - timedelta(hours=3))
-        rows = conn.execute("SELECT id FROM wizer_claim_enrichment_batch(1, 0, 150, 3, 24, 7)").fetchall()
+        rows = conn.execute("SELECT id FROM wizer_claim_enrichment_batch(1, 0, 150, 3, 24, 7, 0)").fetchall()
         assert [r[0] for r in rows] == [oldest]           # published_at plays no part
         assert _claim(conn, 1) == [middle]
         assert _claim(conn, 1) == [newest]
@@ -605,6 +605,12 @@ class TestQueue:
         add_article(conn, enriched=True)                                      # already done
         assert _claim(conn) == sorted(ids)
         assert conn.execute("SELECT wizer_enrichment_queue_depth(0, 3)").fetchone()[0] == len(ids)
+
+    def test_sweeper_min_age_leaves_fresh_articles_alone(self, conn):
+        now = datetime.now(timezone.utc)
+        old = add_article(conn, ingested=now - timedelta(hours=7))
+        add_article(conn, ingested=now - timedelta(minutes=30))           # hand-off runner's
+        assert _claim(conn, min_age=6 * 60) == [old]
 
     def test_optional_age_gate_uses_ingestion_time(self, conn):
         now = datetime.now(timezone.utc)
@@ -717,7 +723,7 @@ class TestPostgrestDecoding:
         ids = [add_article(conn, published=now - timedelta(minutes=i)) for i in range(3)]
         rows = postgrest_call(conn, "wizer_claim_enrichment_batch", {
             "p_limit": 2, "p_max_age_hours": 0, "p_lease_minutes": 150, "p_max_attempts": 3,
-            "p_retry_hours": 24, "p_max_retries": 7})
+            "p_retry_hours": 24, "p_max_retries": 7, "p_min_age_minutes": 0})
         assert sorted(r["id"] for r in rows) == sorted(ids[:2])
         assert "full_text" in rows[0] and "enrich_attempts" in rows[0]     # SETOF articles
         released = postgrest_call(conn, "wizer_release_enrichment_claims", {"p_ids": ids})
@@ -1123,3 +1129,106 @@ class TestBulkIO:
         assert not r2["is_active"] and r2["disabled_reason"] == "dormant" and r2["articles_found"] == 10
         assert r3["is_active"] and r3["disabled_reason"] is None and r3["articles_found"] == 12
         assert r4["fail_count"] == 2 and r4["is_active"] and r4["last_success_at"] is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Hand-off jobs end to end (enrichment/cluster_job.py, enrichment/handoff_runner.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def via_postgrest(conn, monkeypatch):
+    """Route enrichment.db's bulk RPCs through PostgREST-style argument decoding."""
+    from enrichment import db as edb
+
+    def rpc_row(fn):
+        return lambda **kw: postgrest_call(conn, fn, kw)
+
+    monkeypatch.setattr(edb, "fetch_cluster_state", rpc_row("wizer_cluster_state"))
+    monkeypatch.setattr(edb, "db_now", lambda: conn.execute("SELECT now()").fetchone()[0].isoformat())
+    monkeypatch.setattr(edb, "apply_cluster_changes", lambda model, clusters, articles: postgrest_call(
+        conn, "wizer_apply_cluster_changes",
+        {"p_model": model, "p_clusters": clusters, "p_articles": articles})[0])
+    monkeypatch.setattr(edb, "save_enrichment_batch", lambda items: list(postgrest_call(
+        conn, "wizer_save_enrichment_batch", {"p_items": items})[0].values())[0])
+    monkeypatch.setattr(edb, "log_run_start", lambda row: None)
+    monkeypatch.setattr(edb, "log_run_finish", lambda rid, row: None)
+    return edb
+
+
+def _records(conn, stream):
+    out = []
+    for a in stream:
+        aid = add_article(conn, domain=a["domain"], title=a["title"], published=a["t"])
+        out.append({"id": aid, "title": a["title"], "description": "", "full_text": "body " * 60,
+                    "published_at": a["t"].isoformat(), "crawled_at": a["t"].isoformat(),
+                    "domain": a["domain"], "language_code": a["lang"], "_v": a["v"]})
+    return out
+
+
+class TestHandoffJobs:
+
+    def test_cluster_job_two_runs_with_cached_state(self, conn, via_postgrest, monkeypatch, tmp_path):
+        """Work list from the DB; a second run resumes from the cached state; nothing is skipped."""
+        from enrichment import cluster_job
+        from enrichment import db as edb
+        monkeypatch.setattr(edb, "fetch_unclustered_ingested",
+                            lambda since, limit, after_ts, after_id: postgrest_call(
+                                conn, "wizer_fetch_unclustered_ingested",
+                                {"p_since": since, "p_limit": limit,
+                                 **({"p_after_ts": after_ts.isoformat() if hasattr(after_ts, "isoformat") else after_ts,
+                                     "p_after_id": after_id} if after_ts is not None else {})}))
+        monkeypatch.setattr(cluster_job, "CLUSTER_STATE_RETAIN_HOURS", 10_000)   # synthetic T0 is in the past
+        stream = _story_stream(150, seed=21)
+        recs = _records(conn, stream[:80])
+        vec_of = {r["id"]: r["_v"] for r in recs}
+        seen_texts = []
+
+        def fake_embed(texts):
+            seen_texts.extend(texts)
+            return [vec_of[i] for i in pending.pop(0)]
+        pending = []
+        real_fetch = edb.fetch_unclustered_ingested
+
+        def fetch_and_note(*a):
+            rows = real_fetch(*a)
+            if rows:
+                pending.append([r["id"] for r in rows])
+            return rows
+        monkeypatch.setattr(edb, "fetch_unclustered_ingested", fetch_and_note)
+
+        s1 = cluster_job.run_memory_clustering(tmp_path / "state.npz", {recs[0]["id"]: "BODY"},
+                                               since_hours=100_000, page=50, model=MODEL)
+        assert (tmp_path / "state.npz").exists() and s1["written_articles"] == 80 and s1["with_body"] == 1
+        more = _records(conn, stream[80:])
+        vec_of.update({r["id"]: r["_v"] for r in more})
+        s2 = cluster_job.run_memory_clustering(tmp_path / "state.npz", None, since_hours=100_000,
+                                               page=50, model=MODEL)
+        assert s2["seen"] == 70 and s2["written_articles"] == 70
+        bad = conn.execute("""
+            SELECT count(*) FROM article_clusters c
+             WHERE c.article_count <> (SELECT count(*) FROM articles a WHERE a.cluster_id = c.id)""").fetchone()[0]
+        assert bad == 0
+        assert conn.execute("SELECT count(*) FROM articles WHERE cluster_id IS NULL").fetchone()[0] == 0
+
+    def test_handoff_enrichment_saves_in_bulk(self, conn, backend, via_postgrest, monkeypatch):
+        from enrichment import handoff_runner
+        recs = _records(conn, _story_stream(5, seed=3))
+        seeded = assign(backend, recs[0]["id"], unit(1))
+        calls = []
+
+        def fake_enrich(article):
+            if article["id"] == recs[4]["id"]:
+                raise RuntimeError("poison")
+            calls.append(article["_image_phash"])
+            return ({"category": "politics", "word_count": 300},
+                    [{"entity_text": "Smit Machchhar", "entity_type": "PERSON", "salience": 0.8}])
+        monkeypatch.setattr(handoff_runner, "enrich_one", fake_enrich)
+        monkeypatch.setattr(handoff_runner, "_hash_image", lambda url: 42)
+        monkeypatch.setattr(handoff_runner, "SAVE_EVERY", 2)
+        s = handoff_runner.run_handoff_enrichment(recs)
+        assert s["processed"] == 4 and s["saved"] == 4 and s["failed"] == 1 and calls == [42] * 4
+        rows = conn.execute("SELECT id, category, enriched_at IS NOT NULL FROM articles ORDER BY id").fetchall()
+        assert [r[2] for r in rows] == [True, True, True, True, False]    # the crash stays unenriched
+        c = cluster(conn, seeded["cluster_id"])
+        assert c["top_entities"][0]["text"] == "Smit Machchhar" and c["entity_set"] == ["smit machchhar"]
+        assert c["top_entities"][0]["count"] == 1               # only article 0 is in this cluster

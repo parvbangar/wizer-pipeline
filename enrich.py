@@ -117,6 +117,21 @@ Examples:
              "released back to the queue. Default: ENRICH_TIME_BUDGET_MINUTES (0 = none).",
     )
     parser.add_argument(
+        "--handoff",
+        default=None,
+        help="Enrich the articles of an ingest hand-off (a .jsonl.gz file or a directory of "
+             "them, see pipeline/handoff.py) instead of claiming from the queue.",
+    )
+    parser.add_argument("--shard", type=int, default=0, help="With --handoff: this runner's index.")
+    parser.add_argument("--shards", type=int, default=1, help="With --handoff: number of runners.")
+    parser.add_argument(
+        "--min-age-hours",
+        type=float,
+        default=None,
+        help="Sweeper mode: only claim articles ingested at least this long ago (the "
+             "hand-off runners own fresher ones). Default: ENRICH_SWEEP_MIN_AGE_HOURS or 0.",
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable DEBUG logging (very detailed output per article).",
@@ -137,6 +152,25 @@ Examples:
     time_budget = args.time_budget if args.time_budget is not None else ENRICH_TIME_BUDGET_MINUTES
     offset = args.offset if args.offset is not None else int(os.getenv("ENRICH_OFFSET", "0"))
 
+    if args.handoff:
+        from enrichment.handoff_runner import run_handoff_enrichment
+        from pipeline.handoff import find_files, read, shard_of
+        files = find_files(args.handoff)
+        records = shard_of(read(files), args.shard, args.shards)
+        log.info("Hand-off: %d files, %d articles for shard %d/%d",
+                 len(files), len(records), args.shard, args.shards)
+        try:
+            summary = run_handoff_enrichment(records, time_budget_minutes=time_budget,
+                                             dry_run=args.dry_run)
+        except Exception as e:
+            log.exception("Hand-off enrichment crashed: %s", e)
+            sys.exit(1)
+        print(f"
+  Hand-off shard {args.shard}/{args.shards}: {summary}
+")
+        return
+
+    min_age = args.min_age_hours if args.min_age_hours is not None         else float(os.getenv("ENRICH_SWEEP_MIN_AGE_HOURS", "0"))
     try:
         summary = run_enrichment(
             batch_size=batch_size,
@@ -144,6 +178,7 @@ Examples:
             force=args.force,
             offset=offset,
             time_budget_minutes=time_budget,
+            min_age_hours=min_age,
         )
     except KeyboardInterrupt:
         log.info("Stopped by user (Ctrl+C)")

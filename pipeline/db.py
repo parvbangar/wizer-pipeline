@@ -48,7 +48,7 @@ from pipeline.config import (
     ART_COL_URL_HASH, ART_COL_FEED_ID, ART_COL_CRAWLED,
     CADENCE_POLL_INTERVALS,
     ARTICLE_HARD_LIMIT, ARTICLE_PRUNE_TARGET,
-    MAX_ARTICLE_BODY_CHARS,
+    MAX_ARTICLE_BODY_CHARS, FEED_POLL_BATCH, MAX_ERRORS_BEFORE_DISABLE,
 )
 
 log = logging.getLogger(__name__)
@@ -700,10 +700,20 @@ def upsert_articles(rows: list[dict]) -> tuple[int, int]:
       other than a conflict are in neither count (they are logged); callers can
       derive them as len(rows) - inserted - duplicates.
     """
-    if not rows:
-        return 0, 0
+    inserted_rows, duplicates = upsert_articles_returning(rows)
+    return len(inserted_rows), duplicates
 
-    inserted = 0
+
+def upsert_articles_returning(rows: list[dict]) -> tuple[list[dict], int]:
+    """
+    upsert_articles(), but returns the INSERTED rows as the database stored
+    them (with their ids) — the hand-off to clustering / enrichment needs the
+    ids (pipeline/handoff.py). Conflict-skipped rows are not returned.
+    """
+    if not rows:
+        return [], 0
+
+    inserted: list[dict] = []
     duplicates = 0
 
     try:
@@ -712,8 +722,8 @@ def upsert_articles(rows: list[dict]) -> tuple[int, int]:
             .upsert(rows, on_conflict=ART_COL_URL_HASH, ignore_duplicates=True)
             .execute()
         ))
-        inserted = len(resp.data) if resp.data else 0
-        duplicates = len(rows) - inserted
+        inserted = list(resp.data or [])
+        duplicates = len(rows) - len(inserted)
 
     except Exception as e:
         log.error("Batch upsert failed: %s — retrying row by row", e)
@@ -730,7 +740,7 @@ def upsert_articles(rows: list[dict]) -> tuple[int, int]:
                 # empty.  (Counting every non-raising call as "inserted"
                 # inflated the stats.)
                 if row_resp.data:
-                    inserted += 1
+                    inserted.extend(row_resp.data)
                 else:
                     duplicates += 1
             except Exception as row_e:
@@ -740,6 +750,54 @@ def upsert_articles(rows: list[dict]) -> tuple[int, int]:
                 )
 
     return inserted, duplicates
+
+
+class FeedPollBatch:
+    """
+    Feed poll outcomes of one run, written with wizer_record_feed_polls
+    (docs/bulk_io_migration.sql) — one call per FEED_POLL_BATCH feeds instead
+    of update_feed_after_poll's read + write per feed. Same rules; the
+    counters are incremented in SQL.
+
+    If the function is missing (migration not applied yet) the batch falls
+    back to update_feed_after_poll / mark_feed_dormant per feed, so a deploy
+    ahead of the migration still records every poll.
+    """
+
+    def __init__(self, batch_size: int = FEED_POLL_BATCH) -> None:
+        self.items: list[dict] = []
+        self.batch_size = max(int(batch_size), 1)
+        self.written = 0
+
+    def add(self, feed_id, success: bool, new_articles: int = 0,
+            reactivate: bool = False, dormant: bool = False) -> None:
+        self.items.append({"id": str(feed_id), "success": bool(success),
+                           "new_articles": int(new_articles or 0),
+                           "reactivate": bool(reactivate), "dormant": bool(dormant)})
+
+    def flush(self) -> int:
+        """Write everything recorded so far; returns the number of feeds updated."""
+        pending, self.items = self.items, []
+        for i in range(0, len(pending), self.batch_size):
+            chunk = pending[i:i + self.batch_size]
+            try:
+                resp = _retry(lambda: get_client().rpc("wizer_record_feed_polls", {
+                    "p_items": chunk, "p_max_errors": MAX_ERRORS_BEFORE_DISABLE,
+                }).execute())
+                self.written += int(resp.data or 0)
+            except Exception as e:
+                if "wizer_record_feed_polls" not in str(e):
+                    log.error("record_feed_polls failed for %d feeds: %s — per-feed fallback", len(chunk), e)
+                else:
+                    log.warning("wizer_record_feed_polls missing (apply docs/bulk_io_migration.sql) "
+                                "— per-feed fallback")
+                for it in chunk:
+                    update_feed_after_poll(it["id"], it["success"], it["new_articles"], "",
+                                           it["reactivate"])
+                    if it["dormant"]:
+                        mark_feed_dormant(it["id"], "dormant (batched fallback)")
+                    self.written += 1
+        return self.written
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -249,6 +249,24 @@ ARTICLE_PRUNE_TARGET  = int(os.getenv("ARTICLE_PRUNE_TARGET", "0"))
 CRAWL_TIMEOUT_SECONDS = int(os.getenv("CRAWL_TIMEOUT", "15"))
 MAX_ARTICLE_BODY_CHARS = 80_000   # truncate very long articles before storing
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HAND-OFF TO CLUSTERING / ENRICHMENT (pipeline/handoff.py)
+#
+# WIZER_HANDOFF_PATH: where run_pipeline writes the articles it inserted, WITH
+#   their crawled body, for the processing jobs (the ingest workflows upload
+#   it as an artifact). Unset = no hand-off file (local runs).
+# STORE_FULL_TEXT: also write full_text into Postgres. Default: only when there
+#   is no hand-off — with a hand-off the body travels in the file instead,
+#   which keeps the Micro database small (full_text was ~60 % of it).
+# FEED_POLL_BATCH: record feed poll outcomes with one wizer_record_feed_polls
+#   call per this many feeds at the end of the run, instead of up to three
+#   calls per feed (docs/bulk_io_migration.sql).
+# ─────────────────────────────────────────────────────────────────────────────
+HANDOFF_PATH    = os.getenv("WIZER_HANDOFF_PATH", "").strip()
+STORE_FULL_TEXT = os.getenv("STORE_FULL_TEXT", "" if HANDOFF_PATH else "1").lower() in ("1", "true", "yes")
+FEED_POLL_BATCH = int(os.getenv("FEED_POLL_BATCH", "500"))
+
 # Per-article wall-clock budget across ALL fetch strategies/retries/backoff.
 # Without it, 4 strategies x 3 retries x 15 s timeouts could pin one worker
 # thread for several minutes on a single dead article.

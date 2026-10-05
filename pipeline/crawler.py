@@ -144,15 +144,18 @@ class CrawledArticle:
     story_id:       str | None = None
     propensity_score: float | None = None
 
-    def to_db_row(self) -> dict:
+    def to_db_row(self, include_full_text: bool = True) -> dict:
         """
         Convert to a dict matching the articles table schema exactly.
+
+        include_full_text=False leaves the body out of the row (it travels in
+        the hand-off file instead — pipeline/handoff.py, config.STORE_FULL_TEXT).
 
         Every text value (including nested og_tags) has NUL bytes removed:
         PostgreSQL text/jsonb cannot store the NUL character and rejects the
         WHOLE batch insert if any single row contains one.
         """
-        return _strip_nul({
+        row = _strip_nul({
             "feed_id":        self.feed_id,
             "url":            self.url,
             "url_hash":       self.url_hash,
@@ -179,6 +182,9 @@ class CrawledArticle:
             "iab_tier1":      self.iab_tier1,
             "iab_tier2":      self.iab_tier2,
         })
+        if not include_full_text:
+            row.pop("full_text", None)
+        return row
 
 
 def _strip_nul(value: Any) -> Any:

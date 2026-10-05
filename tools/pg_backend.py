@@ -96,11 +96,12 @@ def install_into_enrichment_db(conn) -> None:
 
     def claim_batch(limit, max_age_hours=cfg.ENRICH_MAX_AGE_HOURS,
                     lease_minutes=cfg.ENRICH_CLAIM_LEASE_MINUTES, max_attempts=cfg.ENRICH_MAX_ATTEMPTS,
-                    retry_hours=cfg.ENRICH_RETRY_HOURS, max_retries=cfg.ENRICH_MAX_RETRIES):
+                    retry_hours=cfg.ENRICH_RETRY_HOURS, max_retries=cfg.ENRICH_MAX_RETRIES,
+                    min_age_hours=0):
         with conn.cursor(row_factory=dict_row) as cur:
-            rows = cur.execute("SELECT * FROM wizer_claim_enrichment_batch(%s, %s, %s, %s, %s, %s)",
+            rows = cur.execute("SELECT * FROM wizer_claim_enrichment_batch(%s, %s, %s, %s, %s, %s, %s)",
                                (limit, max_age_hours, lease_minutes, max_attempts,
-                                retry_hours, max_retries)).fetchall()
+                                retry_hours, max_retries, int(round(min_age_hours * 60)))).fetchall()
         conn.commit()
         for r in rows:
             for k in ("published_at", "crawled_at", "created_at"):
