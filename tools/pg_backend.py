@@ -95,15 +95,18 @@ def install_into_enrichment_db(conn) -> None:
         return wrapper
 
     def claim_batch(limit, max_age_hours=cfg.ENRICH_MAX_AGE_HOURS,
-                    lease_minutes=cfg.ENRICH_CLAIM_LEASE_MINUTES, max_attempts=cfg.ENRICH_MAX_ATTEMPTS):
+                    lease_minutes=cfg.ENRICH_CLAIM_LEASE_MINUTES, max_attempts=cfg.ENRICH_MAX_ATTEMPTS,
+                    retry_hours=cfg.ENRICH_RETRY_HOURS, max_retries=cfg.ENRICH_MAX_RETRIES):
         with conn.cursor(row_factory=dict_row) as cur:
-            rows = cur.execute("SELECT * FROM wizer_claim_enrichment_batch(%s, %s, %s, %s)",
-                               (limit, max_age_hours, lease_minutes, max_attempts)).fetchall()
+            rows = cur.execute("SELECT * FROM wizer_claim_enrichment_batch(%s, %s, %s, %s, %s, %s)",
+                               (limit, max_age_hours, lease_minutes, max_attempts,
+                                retry_hours, max_retries)).fetchall()
         conn.commit()
         for r in rows:
-            if r.get("published_at") is not None:
-                r["published_at"] = r["published_at"].isoformat()
-        return sorted(rows, key=lambda r: r.get("published_at") or "", reverse=True)
+            for k in ("published_at", "crawled_at", "created_at"):
+                if r.get(k) is not None:
+                    r[k] = r[k].isoformat()
+        return sorted(rows, key=lambda r: (r.get("crawled_at") or r.get("created_at") or "", r["id"]))
 
     def release_claims(ids):
         n = conn.execute("SELECT wizer_release_enrichment_claims(%s)", (list(ids),)).fetchone()[0]
@@ -128,13 +131,18 @@ def install_into_enrichment_db(conn) -> None:
     def save_article_enrichment(article_id, update):
         cols = {k: (Jsonb(v) if k in _JSON_COLUMNS and v is not None else v) for k, v in update.items()}
         sets = "".join(f"{k} = %({k})s, " for k in cols)
+        if "enrich_error" not in cols:
+            sets += "enrich_error = NULL, "
         conn.execute(f"UPDATE articles SET {sets}enriched_at = now() WHERE id = %(_id)s",
                      {**cols, "_id": article_id})
         conn.commit()
         return True
 
     def mark_enrichment_failed(article_id, error):
-        return save_article_enrichment(article_id, {"enrich_error": error})
+        # enriched_at stays NULL: the queue retries dead letters (enrichment_queue_v2)
+        conn.execute("UPDATE articles SET enrich_error = %s WHERE id = %s", (error, article_id))
+        conn.commit()
+        return True
 
     def log_run_start(row):
         rid = conn.execute(

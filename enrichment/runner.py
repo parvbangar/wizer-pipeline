@@ -8,7 +8,7 @@ WHAT THIS FILE DOES:
   on each one, puts each article into its story cluster, and persists the
   results to Supabase. It is the enrichment equivalent of pipeline/poller.py.
 
-WORK QUEUE (docs/enrichment_queue_migration.sql):
+WORK QUEUE (docs/enrichment_queue_v2_migration.sql):
   Articles are CLAIMED, not paged by offset. wizer_claim_enrichment_batch()
   leases rows with FOR UPDATE SKIP LOCKED, so any number of concurrent runs
   (the two matrix shards, overlapping workflow_run triggers, a manual run)
@@ -16,6 +16,8 @@ WORK QUEUE (docs/enrichment_queue_migration.sql):
   SIGTERM from a cancelled job, Ctrl+C) releases its unprocessed claims; a
   run that dies outright leaves leases that expire after
   ENRICH_CLAIM_LEASE_MINUTES. Either way nothing is lost or stuck.
+  The queue is oldest-first by ingestion time with no age limit, and includes
+  failed crawls: every ingested article is enriched.
 
 PROCESSING MODEL:
   Sequential, not concurrent — the NLP steps are CPU-bound, so async buys
@@ -31,18 +33,21 @@ FAULT TOLERANCE:
   assignment are saved — if anything before it fails, the article stays in
   the queue and is retried (the cluster assignment is idempotent, so a retry
   cannot double-count it).
-  If enrich_one() itself raises, the article is retried on a later run; on
-  its final attempt (ENRICH_MAX_ATTEMPTS) it is parked with enrich_error so
-  one bad article can never block the queue.
+  If enrich_one() itself raises, the article is retried on a later run. On
+  its final regular attempt (ENRICH_MAX_ATTEMPTS) enrich_error records why;
+  it stays unenriched and the queue retries it once a day
+  (ENRICH_RETRY_HOURS, ENRICH_MAX_RETRIES), so one bad article can never
+  block the queue and a transient failure never costs an article.
 
 STEP EXECUTION ORDER:
    1. text_stats   — word count, reading time
-      GATE: < ENRICH_MIN_WORD_COUNT words → skip steps 2-9 (still clustered)
+      < ENRICH_MIN_WORD_COUNT words (briefs, failed crawls): every step runs
+      on headline + description except keywords
    2. language     — detect actual language of the body
       GATE: ENRICH_SUPPORTED_LANGUAGES → sentiment / NER / keywords only for these
    3. sentiment    — multilingual distilbert (+ sentiment_stats)
    4. ner          — spaCy entities (+ ai_region, ai_org)
-   5. keywords     — YAKE
+   5. keywords     — YAKE (not on short text)
    6. classifier   — mDeBERTa zero-shot category (all languages)
    7. tags         — mDeBERTa multi-label topic tags (same model)
    8. summary      — extractive, no model
@@ -117,14 +122,12 @@ def enrich_one(
     except Exception as e:
         log.warning("[%s] text_stats failed: %s", article_id, e)
 
-    # ── Word count gate ───────────────────────────────────────────────────────
-    # Articles below ENRICH_MIN_WORD_COUNT are stubs/briefs with no enrichment
-    # signal. Return early with just text_stats so they don't clog NER/keywords.
-    # enriched_at is still set so they don't re-enter the queue.
+    # ── Short text (briefs, failed crawls with only an RSS description) ──────
+    # Every step below works on headline + description, so short articles get
+    # the full enrichment except keyword extraction (noise on a few words).
+    # They used to return here with text stats only — "enriched" with nothing.
     word_count = update.get("word_count") or 0
-    if word_count < ENRICH_MIN_WORD_COUNT:
-        log.debug("[%s] Skipping enrichment — too short (%d words)", article_id, word_count)
-        return update, []
+    short_text = word_count < ENRICH_MIN_WORD_COUNT
 
     # ── Step 2: Language detection ────────────────────────────────────────────
     language_detected = None
@@ -173,8 +176,8 @@ def enrich_one(
         if ai_org:
             update["ai_org"] = ai_org
 
-    # ── Step 5: Keywords (English + Hindi only) ──────────────────────────────
-    if rich_enrich:
+    # ── Step 5: Keywords (English + Hindi only, not on short text) ───────────
+    if rich_enrich and not short_text:
         try:
             keywords = extract_keywords(title, full_text, description, language_detected)
             update["keywords"] = keywords if keywords else None
@@ -353,10 +356,10 @@ def run_enrichment(
             return summary
         log.info("%s %d articles (queue depth at start: %s)",
                  "Claimed" if use_queue else "Fetched", len(articles), summary["queue_depth_start"])
-        # The queue hands out the NEWEST articles (freshness first), but within
-        # the batch we process oldest → newest: online clustering groups a
-        # story better when its articles arrive in time order (strict pair F1
-        # 0.675 vs 0.646 newest-first on the calibration set, docs/CLUSTERING.md).
+        # The queue hands out the oldest INGESTED articles; within the batch we
+        # process in publication order: online clustering groups a story better
+        # when its articles arrive in time order (strict pair F1 0.675 vs 0.646
+        # newest-first on the calibration set, docs/CLUSTERING.md).
         articles.sort(key=lambda a: a.get("published_at") or "")
         pending_ids = [a["id"] for a in articles]
 

@@ -104,12 +104,13 @@ def vec(v) -> str:
 
 
 def add_article(conn, *, domain="a.com", title="t", published=T0, crawled=True,
-                enriched=False, lang="en") -> int:
+                enriched=False, lang="en", ingested=None) -> int:
     row = conn.execute(
         "INSERT INTO articles (url, url_hash, title, published_at, domain, is_crawled, "
-        "language_code, enriched_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+        "language_code, enriched_at, crawled_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, coalesce(%s, now())) RETURNING id",
         (f"https://{domain}/{uuid.uuid4()}", uuid.uuid4().int >> 65, title, published, domain,
-         crawled, lang, T0 if enriched else None),
+         crawled, lang, T0 if enriched else None, ingested),
     ).fetchone()
     conn.commit()
     return row[0]
@@ -555,11 +556,15 @@ class TestMaintenance:
 # Work queue
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _claim(conn, limit=10, age=48, lease=150, attempts=3) -> list[int]:
-    rows = conn.execute("SELECT id FROM wizer_claim_enrichment_batch(%s, %s, %s, %s)",
-                        (limit, age, lease, attempts)).fetchall()
+def _claim(conn, limit=10, age=0, lease=150, attempts=3, retry=24, retries=7) -> list[int]:
+    rows = conn.execute("SELECT id FROM wizer_claim_enrichment_batch(%s, %s, %s, %s, %s, %s)",
+                        (limit, age, lease, attempts, retry, retries)).fetchall()
     conn.commit()
     return sorted(r[0] for r in rows)
+
+
+def _health(conn, col):
+    return conn.execute(f"SELECT {col} FROM enrichment_queue_health").fetchone()[0]
 
 
 class TestQueue:
@@ -577,19 +582,38 @@ class TestQueue:
         c1.close()
         c2.close()
 
-    def test_newest_first_and_eligibility(self, conn):
+    def test_oldest_ingested_first(self, conn):
         now = datetime.now(timezone.utc)
-        new = add_article(conn, published=now)
-        add_article(conn, published=now - timedelta(hours=72))   # too old
-        add_article(conn, published=now, crawled=False)          # not crawled
-        add_article(conn, published=now, enriched=True)          # already done
-        mid = add_article(conn, published=now - timedelta(hours=1))
-        rows = conn.execute("SELECT id FROM wizer_claim_enrichment_batch(1, 48, 150, 3)").fetchall()
-        assert [r[0] for r in rows] == [new]
-        assert _claim(conn) == [mid]
+        newest = add_article(conn, ingested=now - timedelta(minutes=1))
+        oldest = add_article(conn, ingested=now - timedelta(days=5), published=now)
+        middle = add_article(conn, ingested=now - timedelta(hours=3))
+        rows = conn.execute("SELECT id FROM wizer_claim_enrichment_batch(1, 0, 150, 3, 24, 7)").fetchall()
+        assert [r[0] for r in rows] == [oldest]           # published_at plays no part
+        assert _claim(conn, 1) == [middle]
+        assert _claim(conn, 1) == [newest]
 
-    def test_expired_lease_is_reclaimable_and_attempts_cap(self, conn):
-        aid = add_article(conn, published=datetime.now(timezone.utc))
+    def test_every_unenriched_article_is_eligible(self, conn):
+        """v1 never claimed these: aged out, undated, stale-dated or not crawled."""
+        now = datetime.now(timezone.utc)
+        ids = [
+            add_article(conn, ingested=now - timedelta(days=10)),             # backlog
+            add_article(conn, published=None),                                # no published_at
+            add_article(conn, published=now - timedelta(days=400)),           # republished old item
+            add_article(conn, published=now + timedelta(days=2)),             # future-dated
+            add_article(conn, crawled=False),                                 # crawl failed
+        ]
+        add_article(conn, enriched=True)                                      # already done
+        assert _claim(conn) == sorted(ids)
+        assert conn.execute("SELECT wizer_enrichment_queue_depth(0, 3)").fetchone()[0] == len(ids)
+
+    def test_optional_age_gate_uses_ingestion_time(self, conn):
+        now = datetime.now(timezone.utc)
+        fresh = add_article(conn, published=now - timedelta(days=30))        # old date, just ingested
+        add_article(conn, ingested=now - timedelta(hours=72), published=now)
+        assert _claim(conn, age=48) == [fresh]
+
+    def test_dead_letter_is_retried_daily_then_given_up(self, conn):
+        aid = add_article(conn)
         assert _claim(conn) == [aid]
         assert _claim(conn) == []                                # leased
         for _ in range(2):
@@ -598,8 +622,19 @@ class TestQueue:
             assert _claim(conn) == [aid]                         # lease expired → reclaimed
         conn.execute("UPDATE articles SET enrich_claimed_at = now() - interval '3 hours'")
         conn.commit()
-        assert _claim(conn) == []                                # 3 attempts used → dead letter
-        assert conn.execute("SELECT dead_letter FROM enrichment_queue_health").fetchone()[0] == 1
+        assert _claim(conn) == []                                # 3 attempts → dead letter …
+        assert _health(conn, "dead_letter") == 1 and _health(conn, "pending") == 0
+        for _ in range(7):                                       # … retried once a day, 7 times
+            conn.execute("UPDATE articles SET enrich_claimed_at = now() - interval '25 hours'")
+            conn.commit()
+            assert _claim(conn) == [aid]
+            assert _claim(conn) == []                            # not again the same day
+        conn.execute("UPDATE articles SET enrich_claimed_at = now() - interval '25 hours'")
+        conn.commit()
+        assert _claim(conn) == []                                # 10 attempts → given up
+        assert _health(conn, "given_up") == 1 and _health(conn, "dead_letter") == 0
+        assert conn.execute("SELECT enriched_at FROM articles WHERE id = %s",
+                            (aid,)).fetchone()[0] is None        # never counted as enriched
 
     def test_release_refunds_the_attempt(self, conn):
         aid = add_article(conn, published=datetime.now(timezone.utc))
@@ -614,10 +649,20 @@ class TestQueue:
 
     def test_queue_depth(self, conn):
         now = datetime.now(timezone.utc)
-        add_article(conn, published=now)
-        add_article(conn, published=now - timedelta(hours=100))
+        add_article(conn)
+        add_article(conn, ingested=now - timedelta(hours=100))
         assert conn.execute("SELECT wizer_enrichment_queue_depth(48, 3)").fetchone()[0] == 1
         assert conn.execute("SELECT wizer_enrichment_queue_depth(0, 3)").fetchone()[0] == 2
+
+    def test_health_flags_backlog_and_crawl_failures(self, conn):
+        now = datetime.now(timezone.utc)
+        add_article(conn, ingested=now - timedelta(hours=30))
+        add_article(conn, crawled=False)
+        add_article(conn, enriched=True, ingested=now - timedelta(days=3))
+        assert _health(conn, "unenriched_over_24h") == 1
+        assert _health(conn, "uncrawled_pending") == 1
+        assert _health(conn, "pending") == 2
+        assert 30 * 60 - 5 <= _health(conn, "oldest_pending_minutes") <= 30 * 60 + 5
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -671,7 +716,8 @@ class TestPostgrestDecoding:
         now = datetime.now(timezone.utc)
         ids = [add_article(conn, published=now - timedelta(minutes=i)) for i in range(3)]
         rows = postgrest_call(conn, "wizer_claim_enrichment_batch", {
-            "p_limit": 2, "p_max_age_hours": 48, "p_lease_minutes": 150, "p_max_attempts": 3})
+            "p_limit": 2, "p_max_age_hours": 0, "p_lease_minutes": 150, "p_max_attempts": 3,
+            "p_retry_hours": 24, "p_max_retries": 7})
         assert sorted(r["id"] for r in rows) == sorted(ids[:2])
         assert "full_text" in rows[0] and "enrich_attempts" in rows[0]     # SETOF articles
         released = postgrest_call(conn, "wizer_release_enrichment_claims", {"p_ids": ids})

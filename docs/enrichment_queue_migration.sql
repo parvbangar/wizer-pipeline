@@ -196,7 +196,12 @@ $$;
 --                    before any runner reached them (= throughput shortfall)
 --   oldest_pending_minutes  freshness lag of the queue head
 -- ─────────────────────────────────────────────────────────────────────────────
-CREATE OR REPLACE VIEW enrichment_queue_health AS
+-- Dropped first: enrichment_queue_v2_migration.sql replaces this view with a
+-- different column set, and CREATE OR REPLACE cannot drop columns, so a replay
+-- of the chain would fail here.
+DROP VIEW IF EXISTS enrichment_queue_health;
+
+CREATE VIEW enrichment_queue_health AS
 SELECT
   count(*) FILTER (WHERE enrich_attempts < 3
                      AND published_at > now() - interval '48 hours'

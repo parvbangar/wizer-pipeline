@@ -26,6 +26,7 @@ from enrichment.config import (
     SUPABASE_URL, SUPABASE_KEY,
     TABLE_ARTICLES, TABLE_ENTITIES, TABLE_RUNS,
     ENRICH_MAX_AGE_HOURS, ENRICH_CLAIM_LEASE_MINUTES, ENRICH_MAX_ATTEMPTS,
+    ENRICH_RETRY_HOURS, ENRICH_MAX_RETRIES,
 )
 
 log = logging.getLogger(__name__)
@@ -137,19 +138,14 @@ def fetch_unenriched_batch(limit: int, offset: int = 0) -> list[dict]:
     Paginates internally in chunks of 1,000 to work around Supabase's
     PostgREST default max-rows limit without requiring dashboard changes.
 
-    QUERY LOGIC:
+    Read-only (dry runs): the same rows the claim queue would hand out — see
+    docs/enrichment_queue_v2_migration.sql:
       - enriched_at IS NULL       → not yet processed by Layer 2
-      - is_crawled = true         → full_text has been fetched; uncrawled articles
-                                     have no body text, making NER/keywords/sentiment
-                                     useless. Skip them entirely.
-      - has some content          → at least a title (skip empty shells)
-      - published_at > NOW()-48h  → only enrich fresh articles; stale articles
-                                     will never surface in a freshness-ranked feed
-                                     and waste compute. Gate disabled if
-                                     ENRICH_MAX_AGE_HOURS=0.
-      - ORDER BY published_at DESC → process newest articles first so the app
-                                     layer gets enriched data for fresh articles
-                                     before stale ones.
+      - has a title               → skip empty shells (crawl failures ARE
+                                     included; they are enriched from title +
+                                     description)
+      - crawled_at > NOW()-N h    → only if ENRICH_MAX_AGE_HOURS > 0 (default 0)
+      - ORDER BY crawled_at       → oldest ingested first, like the queue
 
     Returns a list of article dicts with all columns needed by the enrichment steps.
     Returns an empty list if something goes wrong (pipeline continues).
@@ -175,14 +171,14 @@ def fetch_unenriched_batch(limit: int, offset: int = 0) -> list[dict]:
                     "published_at, iab_tier1, iab_tier2"
                 )
                 .is_("enriched_at", "null")
-                .eq("is_crawled", True)
                 .not_.is_("title", "null")
             )
             if age_cutoff:
-                query = query.gt("published_at", age_cutoff)
+                query = query.gt("crawled_at", age_cutoff)
             resp = (
                 query
-                .order("published_at", desc=True)
+                .order("crawled_at")
+                .order("id")
                 .range(page_offset, page_offset + page_size - 1)
                 .execute()
             )
@@ -252,6 +248,7 @@ def save_article_enrichment(article_id: str, update: dict) -> bool:
     Returns True on success, False on failure.
     """
     update["enriched_at"] = datetime.now(timezone.utc).isoformat()
+    update.setdefault("enrich_error", None)   # a retried dead letter that now succeeded
     try:
         _run_with_retry(
             lambda: get_client().table(TABLE_ARTICLES).update(update).eq("id", article_id).execute()
@@ -325,13 +322,17 @@ def claim_batch(
     max_age_hours: int = ENRICH_MAX_AGE_HOURS,
     lease_minutes: int = ENRICH_CLAIM_LEASE_MINUTES,
     max_attempts: int = ENRICH_MAX_ATTEMPTS,
+    retry_hours: int = ENRICH_RETRY_HOURS,
+    max_retries: int = ENRICH_MAX_RETRIES,
 ) -> list[dict]:
     """
     Atomically lease up to `limit` unenriched articles for this runner.
 
     Concurrent runners (parallel shards, overlapping workflow_run triggers)
     each get disjoint rows — FOR UPDATE SKIP LOCKED in
-    wizer_claim_enrichment_batch(). Returned newest-first.
+    wizer_claim_enrichment_batch(). The queue hands out the OLDEST ingested
+    articles first (docs/enrichment_queue_v2_migration.sql), so a backlog
+    drains in order; returned oldest-first.
 
     Raises if the RPC is missing (migration not applied) or the DB is
     unreachable: a run that cannot claim work must fail loudly, not report a
@@ -345,12 +346,14 @@ def claim_batch(
             "p_max_age_hours":  max_age_hours,
             "p_lease_minutes":  lease_minutes,
             "p_max_attempts":   max_attempts,
+            "p_retry_hours":    retry_hours,
+            "p_max_retries":    max_retries,
         }).execute())
         rows = resp.data or []
         claimed.extend(rows)
         if len(rows) < page:
             break
-    claimed.sort(key=lambda r: r.get("published_at") or "", reverse=True)
+    claimed.sort(key=lambda r: (r.get("crawled_at") or r.get("created_at") or "", r.get("id") or 0))
     return claimed
 
 
@@ -394,10 +397,20 @@ def queue_depth(
 
 def mark_enrichment_failed(article_id, error: str) -> bool:
     """
-    Park an article that crashed enrich_one() on its final attempt:
-    enriched_at is set (it leaves the queue) and enrich_error records why.
+    Record why an article crashed enrich_one() on its final regular attempt.
+
+    enriched_at is deliberately NOT set: the article stays unenriched and the
+    queue retries it once every ENRICH_RETRY_HOURS (see claim_batch). Marking
+    it enriched would count an article with no enrichment as done.
     """
-    return save_article_enrichment(article_id, {"enrich_error": (error or "")[:1000]})
+    try:
+        _run_with_retry(lambda: get_client().table(TABLE_ARTICLES)
+                        .update({"enrich_error": (error or "")[:1000]})
+                        .eq("id", article_id).execute())
+        return True
+    except Exception as e:
+        log.error("mark_enrichment_failed failed for %s: %s", article_id, e)
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────

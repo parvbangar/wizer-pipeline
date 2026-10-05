@@ -297,12 +297,16 @@ class TestEnrichOne:
         update, entities = runner.enrich_one(_article(123456789, "2026-10-03T00:00:00+00:00"))
         assert "category" not in update and update["keywords"] == ["k"]
 
-    def test_short_article_skips_nlp(self, fake):
+    def test_short_article_is_fully_enriched_except_keywords(self, fake):
+        """Briefs and failed crawls (title + RSS description only) used to come
+        back with text stats alone and were then marked enriched."""
         art = _article(5, None)
-        art["full_text"] = "too short"
-        art["description"] = ""
+        art["full_text"] = ""
+        art["description"] = "Sensex falls 500 points as banks drag."
         update, entities = runner.enrich_one(art)
-        assert set(update) == {"word_count", "reading_time_mins"} and entities == []
+        assert update["word_count"] < runner.ENRICH_MIN_WORD_COUNT
+        assert {"language_detected", "category", "ai_summary", "image_phash"} <= set(update)
+        assert "keywords" not in update
 
     def test_unsupported_language_skips_rich_steps(self, fake, monkeypatch):
         monkeypatch.setattr(runner, "detect_language", lambda *a: "ta")
@@ -356,12 +360,14 @@ class TestDbQueue:
 
     def test_claim_pages_under_postgrest_cap(self, client):
         def claim(p):
-            return [{"id": i, "published_at": f"2026-10-03T0{i % 10}:00"} for i in range(p["p_limit"])]
+            return [{"id": i, "crawled_at": f"2026-10-03T0{i % 10}:00"} for i in range(p["p_limit"])]
         c = client({"wizer_claim_enrichment_batch": claim})
         rows = db.claim_batch(1200)
         assert [p["p_limit"] for _, p in c.rpc_calls] == [500, 500, 200]
         assert len(rows) == 1200
-        assert rows[0]["published_at"] >= rows[-1]["published_at"]
+        assert rows[0]["crawled_at"] <= rows[-1]["crawled_at"]          # oldest ingested first
+        assert c.rpc_calls[0][1]["p_max_age_hours"] == 0                  # no age gate by default
+        assert {"p_retry_hours", "p_max_retries"} <= set(c.rpc_calls[0][1])
 
     def test_claim_stops_on_short_page(self, client):
         c = client({"wizer_claim_enrichment_batch": [{"id": 1, "published_at": "x"}]})
@@ -402,6 +408,27 @@ class TestDbQueue:
     def test_queue_depth_failure_is_none(self, client):
         client({"wizer_enrichment_queue_depth": RuntimeError("down")})
         assert db.queue_depth() is None
+
+    def test_failed_article_is_not_marked_enriched(self, monkeypatch):
+        """A dead letter keeps enriched_at NULL so the queue retries it."""
+        writes = []
+
+        class Q:
+            def update(self, row):
+                writes.append(row)
+                return self
+
+            def eq(self, *a):
+                return self
+
+            def execute(self):
+                return _Resp([])
+
+        monkeypatch.setattr(db, "get_client", lambda: type("C", (), {"table": lambda self, t: Q()})())
+        assert db.mark_enrichment_failed(7, "RuntimeError: boom") is True
+        assert writes == [{"enrich_error": "RuntimeError: boom"}]
+        assert db.save_article_enrichment(7, {"category": "politics"}) is True
+        assert writes[1]["enrich_error"] is None and "enriched_at" in writes[1]
 
 
 

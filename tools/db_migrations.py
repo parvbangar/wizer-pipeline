@@ -30,6 +30,7 @@ MIGRATION_ORDER: list[str] = [
     "propensity_migration.sql",          # propensity_score column
     "clustering_v2_migration.sql",       # story clustering v2 (current)
     "archive_migration.sql",             # Parquet archive log + verified-only pruning
+    "enrichment_queue_v2_migration.sql", # queue v2: oldest-first, no age gate, crawl failures, retries
 ]
 
 # Roles that Supabase provides and some migrations GRANT to / create policies

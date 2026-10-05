@@ -111,14 +111,17 @@ the timer.
 hourly at :30 as a fallback. **Three runners** start each time and each **claims** its own
 batch of up to 1,000 articles from the work queue:
 
-- **No overlap.** `wizer_claim_enrichment_batch()` leases the newest eligible articles
-  (crawled, unenriched, published in the last 48 h) with `FOR UPDATE SKIP LOCKED`.
+- **Every article, oldest first.** `wizer_claim_enrichment_batch()` leases the oldest
+  unenriched articles by ingestion time (`crawled_at`), with no age limit, failed crawls
+  included (enriched from title + description), using `FOR UPDATE SKIP LOCKED`.
   Concurrent runners, overlapping triggers and manual runs never process the same article.
 - **No lost work.** A claim is a 150-minute lease. A runner that dies leaves leases that
   expire. A runner that stops early (100-minute time budget, cancellation, Ctrl+C) releases
   its unprocessed articles immediately.
-- **No poison pills.** An article that crashes processing three times is parked as a dead
-  letter (`enrichment_queue_health.dead_letter`) instead of crashing every run.
+- **No poison pills, no lost articles.** An article that crashes processing three times
+  becomes a dead letter (`enrichment_queue_health.dead_letter`): it stops blocking runs but
+  stays unenriched and is retried once a day, 7 more times, before it counts as `given_up`.
+- **The number to watch:** `enrichment_queue_health.unenriched_over_24h` must stay 0.
 - **Observability.** Each run writes an `enrichment_runs` row: queue depth, claimed,
   processed, failed, released, cluster outcomes, duration and stop reason.
 

@@ -58,20 +58,22 @@ For each feed:
 **Layer 2** (`enrichment/runner.py`):
 
 - `db.claim_batch()` → `wizer_claim_enrichment_batch` (`FOR UPDATE SKIP LOCKED`, 150-min
-  lease, max 3 attempts).
+  lease). Queue v2: oldest-first by `coalesce(crawled_at, created_at)`, no age gate, failed
+  crawls included; after 3 attempts retried once a day up to 7 times. `enriched_at` is never
+  set for a failed article.
 - The batch is sorted **oldest → newest** (better online clustering) and embedded once
   (`steps/embedding.py`, multilingual-E5-base, no prefix).
 - **Per article** (`enrich_one`):
   - text_stats
-  - [< 50 words: stop here]
+  - [< 50 words (briefs, failed crawls): everything below runs on headline + description, except keywords]
   - language
   - [en/hi only: sentiment, NER, keywords]
   - classifier, tags, summary, image pHash
 - **Then** `save_entities` → `clustering.assign_cluster` (RPC `wizer_assign_cluster`,
   which also stamps `articles.cluster_id`) → `save_article_enrichment`, which sets
   `enriched_at` **last**.
-- **Crash** in `enrich_one`: retried via lease expiry, parked with `enrich_error` on the
-  final attempt.
+- **Crash** in `enrich_one`: retried via lease expiry; on the final regular attempt
+  `enrich_error` records why and the article becomes a daily-retried dead letter.
 - **Time budget or signal:** unprocessed claims are released.
 - **Every run** writes an `enrichment_runs` row.
 

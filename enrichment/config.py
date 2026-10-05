@@ -44,20 +44,20 @@ TABLE_RUNS      = "enrichment_runs"
 #   NLP is CPU-bound so concurrency doesn't help here — sequential is fine.
 #
 # ENRICH_MIN_WORD_COUNT:
-#   Articles below this word count are marked enriched_at but skipped for all
-#   expensive steps (NER, keywords, image download).
+#   Articles below this word count (wire briefs, snippets, failed crawls with
+#   only an RSS description) still get every step that works on a headline +
+#   description — language, sentiment, NER, category, tags, summary, image —
+#   but skip keyword extraction, which only yields noise on a few words.
 #   Typical Indian news snippet / wire brief = 30–60 words.
-#   Articles with < 50 words carry almost no enrichment signal.
 # ─────────────────────────────────────────────────────────────────────────────
 # Raised from 500 → 1000 after Supabase Pro upgrade.
 ENRICH_BATCH_SIZE     = int(os.getenv("ENRICH_BATCH_SIZE",     "1000"))
 ENRICH_MIN_WORD_COUNT = int(os.getenv("ENRICH_MIN_WORD_COUNT", "50"))
 
-# Only enrich articles published within this many hours.
-# Articles older than this are stale — enriching them wastes compute and
-# they will never surface in a freshness-ranked news feed.
-# Set to 0 to disable the gate (enrich everything regardless of age).
-ENRICH_MAX_AGE_HOURS  = int(os.getenv("ENRICH_MAX_AGE_HOURS",  "48"))
+# Only enrich articles INGESTED within this many hours (0 = no limit).
+# Default 0: every ingested article is enriched. With a gate, any shortfall in
+# enrichment throughput silently drops the oldest articles for good.
+ENRICH_MAX_AGE_HOURS  = int(os.getenv("ENRICH_MAX_AGE_HOURS",  "0"))
 
 # Languages to fully enrich (NER, sentiment, keywords, classification).
 # Articles in other languages get text_stats + language_detected only, then marked done.
@@ -210,9 +210,16 @@ SENTIMENT_NEGATIVE_THRESHOLD = 0.40
 #   articles re-claimed underneath it.
 #
 # ENRICH_MAX_ATTEMPTS:
-#   Claims per article before it is parked as a dead letter. An article whose
+#   Claims per article before it becomes a dead letter. An article whose
 #   processing kills the process (OOM, segfault in a native lib) would
 #   otherwise crash every run forever.
+#
+# ENRICH_RETRY_HOURS / ENRICH_MAX_RETRIES:
+#   A dead letter is not abandoned: it is retried once every
+#   ENRICH_RETRY_HOURS, up to ENRICH_MAX_RETRIES more times (a transient
+#   outage — DB, a model download — must not cost an article its enrichment).
+#   Its enriched_at stays NULL the whole time. After the last retry it shows
+#   up as enrichment_queue_health.given_up.
 #
 # ENRICH_TIME_BUDGET_MINUTES:
 #   Stop taking new articles after this long and release the unprocessed rest
@@ -221,6 +228,8 @@ SENTIMENT_NEGATIVE_THRESHOLD = 0.40
 # ─────────────────────────────────────────────────────────────────────────────
 ENRICH_CLAIM_LEASE_MINUTES = int(os.getenv("ENRICH_CLAIM_LEASE_MINUTES", "150"))
 ENRICH_MAX_ATTEMPTS        = int(os.getenv("ENRICH_MAX_ATTEMPTS",        "3"))
+ENRICH_RETRY_HOURS         = int(os.getenv("ENRICH_RETRY_HOURS",         "24"))
+ENRICH_MAX_RETRIES         = int(os.getenv("ENRICH_MAX_RETRIES",         "7"))
 ENRICH_TIME_BUDGET_MINUTES = float(os.getenv("ENRICH_TIME_BUDGET_MINUTES", "0"))
 
 

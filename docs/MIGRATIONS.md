@@ -22,6 +22,7 @@ see the rollout section below for exactly which files to run there. The canonica
 | 10 | `propensity_migration.sql` | `propensity_score` column |
 | 11 | `clustering_v2_migration.sql` | **story clustering v2** (functions incl. the batched job feed, columns, indexes, views) |
 | 12 | `archive_migration.sql` | article archive: `article_archive_log`, export pages, verified-only `wizer_prune_archived_day()` |
+| 13 | `enrichment_queue_v2_migration.sql` | queue v2: oldest-first by ingestion time, no age gate, crawl failures claimed, daily dead-letter retries, new `enrichment_queue_health` |
 
 Files 6–9 are kept so the history replays cleanly on a fresh database. Their functions are
 not used any more. Two of them previously **could not be re-run**: each redefined
@@ -95,6 +96,17 @@ SELECT * FROM enrichment_queue_health;   -- pending should drain; dead_letter ~0
 SELECT * FROM cluster_health;            -- clustered_pct ~100, seed_pct 60-80 %
 SELECT * FROM top_stories_24h LIMIT 20;
 SELECT * FROM enrichment_runs ORDER BY started_at DESC LIMIT 10;
+```
+
+## Enrichment queue v2 (2026-10-05)
+
+Apply `enrichment_queue_v2_migration.sql`, then deploy the code — in that order: the new code
+calls the 6-argument `wizer_claim_enrichment_batch`, which the migration creates (and it drops
+the 4-argument v1). Between the two steps the old code's claims fail loudly and nothing is
+lost; the queue simply waits.
+
+```sql
+SELECT * FROM enrichment_queue_health;   -- unenriched_over_24h must stay 0; given_up ~0
 ```
 
 ## Rollback switches (no redeploy needed)
