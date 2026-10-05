@@ -1,0 +1,135 @@
+name: Layer 2 — Process ingested articles
+
+# After every ingest run: cluster in memory, then enrich in parallel shards.
+# The runners do the work; the Micro database only receives results in bulk
+# (docs/bulk_io_migration.sql).
+#
+#   cluster  ONE at a time (group story-clustering, shared with cluster.yml and
+#            cluster_maintenance.yml): the cached cluster state is the source of
+#            truth for live clusters and must have a single writer. Its work
+#            list comes from the database — every article still without a
+#            cluster — so a superseded pending run loses nothing.
+#   enrich   ENRICH_SHARDS runners split the triggering run's hand-off by
+#            article id. Articles they do not finish keep enriched_at NULL and
+#            are picked up by the sweeper (enrichment.yml).
+on:
+  workflow_run:
+    workflows:
+      - "Ingest — breaking_news (every 1 hour)"
+      - "Ingest — multiple_daily (every 3 hours)"
+      - "Ingest — daily + unknown (every 12 hours)"
+      - "Ingest — weekly (every 24 hours)"
+      - "Ingest — several_weekly (every 24 hours)"
+      - "Ingest — monthly (every 24 hours)"
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read          # download the triggering run's hand-off artifact
+
+env:
+  SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+  SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+  CLUSTERING_ENABLED:   ${{ vars.CLUSTERING_ENABLED || 'true' }}
+  HF_HOME:              /home/runner/.cache/huggingface
+
+jobs:
+  cluster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: story-clustering
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-cluster.txt
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/huggingface
+          key: hf-e5base-v1
+      - name: Install PyTorch (CPU-only)
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -r requirements-cluster.txt
+      - name: Download hand-off (bodies for the embedding text)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: handoff
+          path: handoff
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Restore cluster state
+        uses: actions/cache/restore@v4
+        with:
+          path: state/cluster_state.npz
+          key: cluster-state-${{ github.run_id }}
+          restore-keys: cluster-state-
+      - name: Cluster in memory
+        if: env.CLUSTERING_ENABLED != 'false'
+        run: |
+          BODIES=""
+          if [ -d handoff ]; then BODIES="--bodies handoff"; fi
+          python cluster.py run --memory --state state/cluster_state.npz $BODIES --hours 72 --time-budget 50
+      - name: Save cluster state
+        if: success() && env.CLUSTERING_ENABLED != 'false'
+        uses: actions/cache/save@v4
+        with:
+          path: state/cluster_state.npz
+          key: cluster-state-${{ github.run_id }}-${{ github.run_attempt }}
+
+  enrich:
+    needs: cluster
+    if: always()          # enrichment must not wait on a clustering failure
+    name: "Enrich shard ${{ matrix.shard }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      ENRICH_RUNNER_NAME: handoff-${{ matrix.shard }}
+    steps:
+      - name: Download hand-off
+        id: handoff
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: handoff
+          path: handoff
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - uses: actions/checkout@v4
+        if: steps.handoff.outcome == 'success'
+        with:
+          path: src
+      - uses: actions/setup-python@v5
+        if: steps.handoff.outcome == 'success'
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: src/requirements.txt
+      - name: Cache HuggingFace models
+        if: steps.handoff.outcome == 'success'
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/huggingface
+          key: hf-models-deberta-sentiment-e5base-v4
+          restore-keys: hf-models-deberta-sentiment-
+      - name: Install dependencies
+        if: steps.handoff.outcome == 'success'
+        working-directory: src
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+          python -m spacy download en_core_web_md
+          python -m spacy download xx_ent_wiki_sm
+      - name: Enrich this shard
+        if: steps.handoff.outcome == 'success'
+        working-directory: src
+        run: python enrich.py --handoff ../handoff --shard ${{ matrix.shard }} --shards 4 --time-budget 100

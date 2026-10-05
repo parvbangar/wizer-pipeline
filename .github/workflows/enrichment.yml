@@ -1,29 +1,18 @@
 name: Layer 2 — Metadata Enrichment
 
-# PRIMARY TRIGGER: workflow_run
-#   Fires within ~1 minute of any ingestion job completing, so newly ingested
-#   articles are enriched almost immediately.
+# THE SWEEPER. Fresh articles are enriched by process.yml straight from the
+# ingest hand-off (with their body). This job is the backstop that guarantees
+# every article is enriched: every 3 hours it claims, oldest first, articles
+# ingested more than ENRICH_SWEEP_MIN_AGE_HOURS ago that are still unenriched
+# — a hand-off shard that ran out of time, a failed save, a lost artifact, a
+# dead letter due its daily retry — and enriches them from title + description
+# (the body is not stored in Postgres). See docs/enrichment_queue_v2_migration.sql.
 #
-# FALLBACK TRIGGER: hourly schedule
-#   Catches anything that slipped through.
-#
-# Three parallel runners. They do NOT split the queue by offset: each one
-# CLAIMS its own batch from the work queue
-# (wizer_claim_enrichment_batch, FOR UPDATE SKIP LOCKED), so they — and any
-# overlapping run from another trigger — never process the same article.
-# See docs/enrichment_queue_migration.sql.
+# Claims use FOR UPDATE SKIP LOCKED, so an overlapping manual run never
+# processes the same article.
 on:
-  workflow_run:
-    workflows:
-      - "Ingest — breaking_news (every 1 hour)"
-      - "Ingest — multiple_daily (every 3 hours)"
-      - "Ingest — daily + unknown (every 12 hours)"
-      - "Ingest — weekly (every 24 hours)"
-      - "Ingest — several_weekly (every 24 hours)"
-      - "Ingest — monthly (every 24 hours)"
-    types: [completed]
   schedule:
-    - cron: "30 * * * *"
+    - cron: "40 */3 * * *"
   workflow_dispatch:
     inputs:
       batch_size:
@@ -37,36 +26,31 @@ on:
 
 jobs:
   enrich:
-    name: "Enrich runner ${{ matrix.shard }}"
+    name: "Sweeper"
     runs-on: ubuntu-latest
     timeout-minutes: 120
     # At most one running + one queued job per runner slot. Seven triggers can
     # fire within the same hour; without this, a backlog of identical jobs
     # would pile up and burn Actions minutes claiming an already-drained queue.
     concurrency:
-      group: enrich-runner-${{ matrix.shard }}
+      group: enrich-sweeper
       cancel-in-progress: false
-    strategy:
-      fail-fast: false
-      matrix:
-        # ~5-7 s of CPU per article after the classifier speed-up (was ~16 s, plus
-        # DB stalls → 65 s). 3 runners × back-to-back 100-min runs target the
-        # ~50K articles/day ingestion rate; check enrichment_queue_health.
-        shard: [0, 1, 2]
     env:
       SUPABASE_URL:               ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY:       ${{ secrets.SUPABASE_SERVICE_KEY }}
       ENRICH_BATCH_SIZE:          ${{ github.event.inputs.batch_size || '1000' }}
-      ENRICH_RUNNER_NAME:         shard-${{ matrix.shard }}
+      ENRICH_RUNNER_NAME:         sweeper
+      # Leave fresh articles to the hand-off runners (process.yml).
+      ENRICH_SWEEP_MIN_AGE_HOURS: "6"
       # Stop starting new articles at 100 min and release the rest, leaving
       # 20 min of the 120-min timeout for the in-flight article + bookkeeping.
       ENRICH_TIME_BUDGET_MINUTES: "100"
       # The claim lease must outlive the job timeout (see enrichment/config.py).
       ENRICH_CLAIM_LEASE_MINUTES: "150"
-      # Kill switch without a redeploy: set the repository variable
-      # CLUSTERING_ENABLED=false (Settings → Variables). Enrichment continues;
-      # articles are saved unclustered and `cluster.py backfill` places them later.
-      CLUSTERING_ENABLED:         ${{ vars.CLUSTERING_ENABLED || 'true' }}
+      # Clustering belongs to the single writer (process.yml / cluster.yml,
+      # group story-clustering); a second writer here could lose an update to
+      # the in-memory state. Unclustered articles are on that job's work list.
+      CLUSTERING_ENABLED:         "false"
       HF_HOME:                    /home/runner/.cache/huggingface
     steps:
       - uses: actions/checkout@v4

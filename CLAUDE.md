@@ -35,6 +35,27 @@ Things described in older notes that **do not exist**: an `Ingestion/` folder, `
 `Feed_Validator/`. Propensity scoring was removed in `374dfe0` and has not been rebuilt (out
 of scope so far); the `propensity_score` column is unused.
 
+## Architecture: runners do the work, the database is a sink (2026-10-05)
+
+Production runs on Supabase **Micro** (burstable CPU and disk I/O, no budget to upgrade).
+Using Postgres as the pipeline's workspace exhausted its credits, so:
+
+- **Ingest** (`ingest-*.yml`) writes article rows WITHOUT `full_text`. The inserted rows plus
+  their bodies go to a hand-off file (`pipeline/handoff.py`, `WIZER_HANDOFF_PATH`), uploaded
+  as the artifact `handoff`. Feed poll outcomes are written once per run
+  (`db.FeedPollBatch` → `wizer_record_feed_polls`).
+- **`process.yml`** runs after every ingest:
+  - `cluster`: in-memory clustering (`cluster.py run --memory`, `enrichment/cluster_job.py`,
+    `enrichment/memory_clustering.py`). Its work list is every unclustered article in the
+    DB; its state is cached between runs (Actions cache, delta-synced).
+  - `enrich`: 4 shards over the hand-off (`enrich.py --handoff --shard i --shards 4`,
+    `enrichment/handoff_runner.py`), saved 100 at a time (`wizer_save_enrichment_batch`).
+- **`enrichment.yml` is the sweeper.** Every 3 h it claims articles ingested more than 6 h
+  ago that are still unenriched, and enriches them from title + description.
+- **`cluster.yml`** is a 2-hourly fallback of the same in-memory job.
+
+All bulk RPCs live in `docs/bulk_io_migration.sql`.
+
 ## Data flow
 
 **Layer 1** (`pipeline/poller.py`): `get_due_feeds(cadence)`, paginated past PostgREST's
@@ -96,9 +117,19 @@ already have a cluster.
 
 ## Invariants — do not break
 
-- **Cluster mutations happen only in SQL**, inside `wizer_assign_cluster` /
-  `wizer_merge_clusters`, under the shared advisory lock. Never update cluster counters
-  from Python: read-modify-write races were the v1 bug.
+- **Cluster state has ONE writer at a time: the concurrency group `story-clustering`**
+  (`process.yml` cluster job, `cluster.yml`, `cluster_maintenance.yml`).
+  - The in-memory clusterer owns centroid sums, counts, outlets and time spans. It writes
+    them with `wizer_apply_cluster_changes`.
+  - Maintenance merges in SQL, inside the same group.
+  - Never write those columns from anywhere else; the v1 bug was read-modify-write races.
+    In particular the sweeper runs with `CLUSTERING_ENABLED=false`.
+  - Enrichment may add `top_entities` / `entity_set`, and must not bump `updated_at`.
+- **`memory_clustering.py` must match `wizer_assign_cluster`.**
+  `tests/test_clustering_sql.py::TestMemoryParity` checks decisions, partitions and the
+  bulk-written rows against the SQL function. Change both together.
+- **The delta-sync bookmark is the DB clock** returned by `wizer_apply_cluster_changes`.
+  Rows it writes carry `updated_at = that time`, so they are not re-downloaded.
 - **`wizer_assign_cluster` must stay idempotent.** An already-clustered article returns
   `existing`. That is what makes retries and `--force` safe.
 - **`enriched_at` is the last write** for an article.
@@ -149,6 +180,8 @@ already have a cluster.
 - **`newspaper3k`'s internal re-fetch** is not bounded by the crawler's per-article deadline.
 - **`LEGACY_URL_HASH_CHECK`** can be removed about 90 days after the URL-normalisation change
   is deployed.
+- **`full_text` is not in Postgres** for articles ingested with a hand-off. It travels in
+  the `handoff` artifact (7-day retention). The sweeper enriches without it.
 - **Retention** is handled by the archive (`archive.py`, `archiver/`, `archive.yml`), not
   `ARTICLE_HARD_LIMIT`, which stays 0. Postgres keeps a 30-day hot window. Older days are
   exported to Parquet in the Storage bucket `article-archive`, verified, then deleted through

@@ -22,8 +22,10 @@ on:
         required: false
         default: "6"
 
+# Same group as the in-memory clusterer (process.yml, cluster.yml): merges must
+# never overlap it. Their changes reach its cached state through the delta sync.
 concurrency:
-  group: cluster-maintenance
+  group: story-clustering
   cancel-in-progress: false
 
 jobs:

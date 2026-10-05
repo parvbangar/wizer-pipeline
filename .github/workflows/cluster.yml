@@ -1,30 +1,19 @@
 name: Layer 2 — Story clustering
 
-# Clusters EVERY ingested article — independent of NLP enrichment, which only
-# reaches a fraction of the ~50K articles/day. Embedding a headline is ~100x
-# cheaper than the NLP set, so this job keeps outlet_count complete.
-#
-# Triggers: after each ingestion run (workflow_run) + every 30 min fallback.
-# One run at a time; a queued run picks up where the last one stopped
-# (articles without a cluster_id, oldest first).
+# Fallback for the in-memory clusterer. process.yml clusters after every
+# ingest run; this schedule makes sure nothing waits long if those runs were
+# superseded or failed. Same job, same single-writer group, same cached state:
+# it clusters EVERY article still without a cluster (titles + descriptions from
+# the database — no hand-off needed), oldest ingested first.
 on:
-  workflow_run:
-    workflows:
-      - "Ingest — breaking_news (every 1 hour)"
-      - "Ingest — multiple_daily (every 3 hours)"
-      - "Ingest — daily + unknown (every 12 hours)"
-      - "Ingest — weekly (every 24 hours)"
-      - "Ingest — several_weekly (every 24 hours)"
-      - "Ingest — monthly (every 24 hours)"
-    types: [completed]
   schedule:
-    - cron: "15,45 * * * *"
+    - cron: "15 */2 * * *"
   workflow_dispatch:
     inputs:
       hours:
-        description: "Look-back window in hours (use 72+ for a catch-up backfill)"
+        description: "Look back this many hours of ingestion"
         required: false
-        default: "12"
+        default: "72"
 
 concurrency:
   group: story-clustering
@@ -54,7 +43,19 @@ jobs:
       - name: Install PyTorch (CPU-only)
         run: pip install torch --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -r requirements-cluster.txt
-      - name: Cluster new articles
+      - name: Restore cluster state
+        uses: actions/cache/restore@v4
+        with:
+          path: state/cluster_state.npz
+          key: cluster-state-${{ github.run_id }}
+          restore-keys: cluster-state-
+      - name: Cluster in memory
         if: env.CLUSTERING_ENABLED != 'false'
         # Stop cleanly at 50 min (job timeout 60); the next run continues.
-        run: python cluster.py run --hours ${{ github.event.inputs.hours || '12' }} --time-budget 50
+        run: python cluster.py run --memory --state state/cluster_state.npz --hours ${{ github.event.inputs.hours || '72' }} --time-budget 50
+      - name: Save cluster state
+        if: success() && env.CLUSTERING_ENABLED != 'false'
+        uses: actions/cache/save@v4
+        with:
+          path: state/cluster_state.npz
+          key: cluster-state-${{ github.run_id }}-${{ github.run_attempt }}

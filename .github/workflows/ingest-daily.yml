@@ -29,6 +29,7 @@ jobs:
         env:
           SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY:   ${{ secrets.SUPABASE_SERVICE_KEY }}
+          WIZER_HANDOFF_PATH:     handoff/daily.jsonl.gz
           MAX_CONCURRENT_FEEDS:   "10"
           MAX_CONCURRENT_ARTICLES: "5"
         run: python main.py --cadence daily
@@ -37,6 +38,19 @@ jobs:
         env:
           SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY:   ${{ secrets.SUPABASE_SERVICE_KEY }}
+          WIZER_HANDOFF_PATH:     handoff/unknown.jsonl.gz
           MAX_CONCURRENT_FEEDS:   "10"
           MAX_CONCURRENT_ARTICLES: "5"
         run: python main.py --cadence unknown
+
+      # Inserted articles WITH their body, for the processing workflow
+      # (process.yml: in-memory clustering + sharded enrichment). Uploaded
+      # even after a failed poll: whatever was inserted must reach enrichment.
+      - name: Upload hand-off
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: handoff
+          path: handoff/
+          retention-days: 7
+          if-no-files-found: ignore

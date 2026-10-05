@@ -23,6 +23,7 @@ see the rollout section below for exactly which files to run there. The canonica
 | 11 | `clustering_v2_migration.sql` | **story clustering v2** (functions incl. the batched job feed, columns, indexes, views) |
 | 12 | `archive_migration.sql` | article archive: `article_archive_log`, export pages, verified-only `wizer_prune_archived_day()` |
 | 13 | `enrichment_queue_v2_migration.sql` | queue v2: oldest-first by ingestion time, no age gate, crawl failures claimed, daily dead-letter retries, new `enrichment_queue_health` |
+| 14 | `bulk_io_migration.sql` | bulk I/O: cluster state fetch, `wizer_apply_cluster_changes`, `wizer_fetch_unclustered_ingested`, `wizer_save_enrichment_batch`, `wizer_record_feed_polls` |
 
 Files 6–9 are kept so the history replays cleanly on a fresh database. Their functions are
 not used any more. Two of them previously **could not be re-run**: each redefined
@@ -97,6 +98,26 @@ SELECT * FROM cluster_health;            -- clustered_pct ~100, seed_pct 60-80 %
 SELECT * FROM top_stories_24h LIMIT 20;
 SELECT * FROM enrichment_runs ORDER BY started_at DESC LIMIT 10;
 ```
+
+## Runners do the work, the DB is a sink (2026-10-05)
+
+Order:
+
+1. Apply `enrichment_queue_v2_migration.sql`, then `bulk_io_migration.sql`.
+2. Spread out the first poll after the 2026-10-05 reset. Otherwise every active feed is due
+   at once, and that spike alone saturates Micro:
+   ```sql
+   UPDATE feeds
+      SET last_polled_at = now() - random() * coalesce(poll_interval_mins, 720) * interval '1 minute'
+    WHERE is_active AND last_polled_at IS NULL;
+   ```
+3. Push the code, then enable the workflows: `ingest-*`, `process.yml`, `enrichment.yml`
+   (sweeper), `cluster.yml` and `cluster_maintenance.yml`.
+4. Watch the first runs:
+   - the ingest log shows `Hand-off: wrote N articles`
+   - the `process.yml` cluster job does a cold full load once, then logs `applied N changed clusters`
+   - each enrich shard logs `saved`
+   - `SELECT * FROM enrichment_queue_health;` shows `unenriched_over_24h` = 0
 
 ## Enrichment queue v2 (2026-10-05)
 
