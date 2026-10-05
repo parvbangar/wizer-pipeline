@@ -1195,6 +1195,7 @@ class TestHandoffJobs:
                 pending.append([r["id"] for r in rows])
             return rows
         monkeypatch.setattr(edb, "fetch_unclustered_ingested", fetch_and_note)
+        monkeypatch.setattr(cluster_job, "embed_texts", fake_embed)
 
         s1 = cluster_job.run_memory_clustering(tmp_path / "state.npz", {recs[0]["id"]: "BODY"},
                                                since_hours=100_000, page=50, model=MODEL)
