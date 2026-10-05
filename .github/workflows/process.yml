@@ -9,9 +9,13 @@ name: Layer 2 — Process ingested articles
 #            truth for live clusters and must have a single writer. Its work
 #            list comes from the database — every article still without a
 #            cluster — so a superseded pending run loses nothing.
-#   enrich   ENRICH_SHARDS runners split the triggering run's hand-off by
-#            article id. Articles they do not finish keep enriched_at NULL and
-#            are picked up by the sweeper (enrichment.yml).
+#   plan     counts the hand-off and sizes the fan-out: one enrichment runner
+#            per ARTICLES_PER_SHARD articles (1..MAX_SHARDS). A first poll after
+#            a reset returns every feed's whole item list — tens of thousands of
+#            articles — and must still be enriched WITH the body.
+#   enrich   that many runners split the triggering run's hand-off by article
+#            id. Articles they do not finish keep enriched_at NULL and are
+#            picked up by the sweeper (enrichment.yml).
 on:
   workflow_run:
     workflows:
@@ -34,6 +38,39 @@ env:
   HF_HOME:              /home/runner/.cache/huggingface
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      shards: ${{ steps.size.outputs.shards }}
+      count:  ${{ steps.size.outputs.count }}
+    steps:
+      - name: Download hand-off
+        id: handoff
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: handoff
+          path: handoff
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Size the enrichment fan-out
+        id: size
+        env:
+          ARTICLES_PER_SHARD: "1500"
+          MAX_SHARDS: "16"
+        run: |
+          N=0
+          if [ -d handoff ]; then
+            N=$(find handoff -name '*.jsonl.gz' -exec zcat {} + | grep -c . || true)
+          fi
+          S=$(( (N + ARTICLES_PER_SHARD - 1) / ARTICLES_PER_SHARD ))
+          [ "$S" -gt "$MAX_SHARDS" ] && S=$MAX_SHARDS
+          LIST=$(python3 -c "import json,sys; print(json.dumps(list(range(int(sys.argv[1])))))" "$S")
+          echo "Hand-off: $N articles -> $S enrichment shard(s)"
+          echo "count=$N" >> "$GITHUB_OUTPUT"
+          echo "shards=$LIST" >> "$GITHUB_OUTPUT"
+
   cluster:
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -83,15 +120,17 @@ jobs:
           key: cluster-state-${{ github.run_id }}-${{ github.run_attempt }}
 
   enrich:
-    needs: cluster
-    if: always()          # enrichment must not wait on a clustering failure
+    needs: [plan, cluster]
+    # Runs even if clustering failed or was superseded; skipped when there is
+    # nothing to enrich.
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.shards != '[]'
     name: "Enrich shard ${{ matrix.shard }}"
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     env:
       ENRICH_RUNNER_NAME: handoff-${{ matrix.shard }}
     steps:
@@ -132,4 +171,6 @@ jobs:
       - name: Enrich this shard
         if: steps.handoff.outcome == 'success'
         working-directory: src
-        run: python enrich.py --handoff ../handoff --shard ${{ matrix.shard }} --shards 4 --time-budget 100
+        run: >
+          python enrich.py --handoff ../handoff --shard ${{ matrix.shard }}
+          --shards ${{ strategy.job-total }} --time-budget 100

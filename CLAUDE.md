@@ -48,9 +48,9 @@ Using Postgres as the pipeline's workspace exhausted its credits, so:
   - `cluster`: in-memory clustering (`cluster.py run --memory`, `enrichment/cluster_job.py`,
     `enrichment/memory_clustering.py`). Its work list is every unclustered article in the
     DB; its state is cached between runs (Actions cache, delta-synced).
-  - `enrich`: 4 shards over the hand-off (`enrich.py --handoff --shard i --shards 4`,
+  - `enrich`: one shard per ~1,500 hand-off articles, up to 16 (`enrich.py --handoff --shard i --shards n`,
     `enrichment/handoff_runner.py`), saved 100 at a time (`wizer_save_enrichment_batch`).
-- **`enrichment.yml` is the sweeper.** Every 3 h it claims articles ingested more than 6 h
+- **`enrichment.yml` is the sweeper.** Every 2 h, 4 runners claim articles ingested more than 6 h
   ago that are still unenriched, and enriches them from title + description.
 - **`cluster.yml`** is a 2-hourly fallback of the same in-memory job.
 

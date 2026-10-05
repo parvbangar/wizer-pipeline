@@ -2,23 +2,24 @@ name: Layer 2 — Metadata Enrichment
 
 # THE SWEEPER. Fresh articles are enriched by process.yml straight from the
 # ingest hand-off (with their body). This job is the backstop that guarantees
-# every article is enriched: every 3 hours it claims, oldest first, articles
+# every article is enriched: every 2 hours 4 runners claim, oldest first, articles
 # ingested more than ENRICH_SWEEP_MIN_AGE_HOURS ago that are still unenriched
 # — a hand-off shard that ran out of time, a failed save, a lost artifact, a
 # dead letter due its daily retry — and enriches them from title + description
 # (the body is not stored in Postgres). See docs/enrichment_queue_v2_migration.sql.
 #
-# Claims use FOR UPDATE SKIP LOCKED, so an overlapping manual run never
-# processes the same article.
+# Claims use FOR UPDATE SKIP LOCKED, so the 4 runners (and an overlapping
+# manual run) never process the same article. Capacity ~4 x 3,000 every 2 h:
+# enough to drain the overflow of a first poll after a reset within a day.
 on:
   schedule:
-    - cron: "40 */3 * * *"
+    - cron: "40 */2 * * *"
   workflow_dispatch:
     inputs:
       batch_size:
-        description: "Articles per runner (default: 1000)"
+        description: "Articles per runner (default: 3000)"
         required: false
-        default: "1000"
+        default: "3000"
       force:
         description: "Re-enrich already-enriched articles? (true/false)"
         required: false
@@ -26,20 +27,24 @@ on:
 
 jobs:
   enrich:
-    name: "Sweeper"
+    name: "Sweeper ${{ matrix.runner }}"
     runs-on: ubuntu-latest
     timeout-minutes: 120
     # At most one running + one queued job per runner slot. Seven triggers can
     # fire within the same hour; without this, a backlog of identical jobs
     # would pile up and burn Actions minutes claiming an already-drained queue.
     concurrency:
-      group: enrich-sweeper
+      group: enrich-sweeper-${{ matrix.runner }}
       cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [0, 1, 2, 3]
     env:
       SUPABASE_URL:               ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY:       ${{ secrets.SUPABASE_SERVICE_KEY }}
-      ENRICH_BATCH_SIZE:          ${{ github.event.inputs.batch_size || '1000' }}
-      ENRICH_RUNNER_NAME:         sweeper
+      ENRICH_BATCH_SIZE:          ${{ github.event.inputs.batch_size || '3000' }}
+      ENRICH_RUNNER_NAME:         sweeper-${{ matrix.runner }}
       # Leave fresh articles to the hand-off runners (process.yml).
       ENRICH_SWEEP_MIN_AGE_HOURS: "6"
       # Stop starting new articles at 100 min and release the rest, leaving
