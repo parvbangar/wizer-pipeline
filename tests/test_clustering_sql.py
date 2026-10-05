@@ -908,3 +908,218 @@ class TestArchiveSQL:
         status = conn.execute("SELECT status, article_rows, entity_rows FROM article_archive_log "
                               "WHERE day = %s", (self.OLD,)).fetchone()
         assert status == ("pruned", 5, 5)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# In-memory clustering ≡ wizer_assign_cluster (enrichment/memory_clustering.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _story_stream(n=240, seed=7):
+    """Articles from 12 stories (similarities spread across the 0.85 join line) + noise,
+    over 30 h, mostly in time order with some late arrivals."""
+    rng = np.random.default_rng(seed)
+    bases = [unit(1000 + s) for s in range(12)]
+    out = []
+    for i in range(n):
+        if rng.random() < 0.2:
+            v = unit(5000 + i)
+        else:
+            v = at_cos(bases[int(rng.integers(12))], float(rng.uniform(0.84, 0.98)), 6000 + i)
+        late = float(rng.uniform(-3, 0)) if rng.random() < 0.1 else 0.0
+        t = T0 + timedelta(hours=30 * i / n + late)
+        out.append({"v": v, "t": t, "domain": f"site{int(rng.integers(15))}.com",
+                    "title": f"title {i}", "lang": "en" if rng.random() < 0.7 else "hi"})
+    return out
+
+
+def _mem_params():
+    from enrichment.memory_clustering import _Params
+    return _Params(join=0.85, anchor=0.75, gap_s=18 * 3600, span_s=120 * 3600, candidates=5)
+
+
+def _apply(conn, state):
+    clusters, articles = state.pending_changes()
+    row = postgrest_call(conn, "wizer_apply_cluster_changes",
+                         {"p_model": MODEL, "p_clusters": clusters, "p_articles": articles})[0]
+    state.mark_flushed(row["synced_at"].isoformat())
+    return row
+
+
+def _vec(text):
+    return [float(x) for x in str(text).strip("[]").split(",")]
+
+
+def _fetcher(conn):
+    return lambda **kw: postgrest_call(conn, "wizer_cluster_state", kw)
+
+
+class TestMemoryParity:
+
+    def test_decisions_match_sql(self, conn, backend):
+        from enrichment.memory_clustering import ClusterState
+        st = ClusterState(model=MODEL)
+        mapping, actions = {}, []
+        for a in _story_stream():
+            aid = add_article(conn, domain=a["domain"], title=a["title"], published=a["t"])
+            sql = assign(backend, aid, a["v"], published=a["t"], domain=a["domain"],
+                         title=a["title"], lang=a["lang"])
+            mem = st.assign(aid, a["v"], a["t"], a["domain"], a["title"], a["lang"], _mem_params())
+            assert mem.action == sql["action"], f"article {aid}"
+            assert mapping.setdefault(sql["cluster_id"], mem.cluster_id) == mem.cluster_id
+            if sql["action"] == "join":
+                assert mem.similarity == pytest.approx(sql["similarity"], abs=1e-4)
+            actions.append(sql["action"])
+        assert actions.count("join") >= 60 and actions.count("seed") >= 30   # the test bites
+
+    def test_bulk_write_reproduces_sql_cluster_rows(self, conn, backend):
+        from enrichment.memory_clustering import ClusterState
+        stream = _story_stream(120, seed=11)
+        ids = [add_article(conn, domain=a["domain"], title=a["title"], published=a["t"]) for a in stream]
+        for aid, a in zip(ids, stream):                                   # reference: the SQL path
+            assign(backend, aid, a["v"], published=a["t"], domain=a["domain"], title=a["title"], lang=a["lang"])
+        q = ("SELECT c.*, (SELECT array_agg(id ORDER BY id) FROM articles WHERE cluster_id = c.id) AS members "
+             "FROM article_clusters c")
+        with conn.cursor(row_factory=dict_row) as cur:
+            ref = {r["canonical_article_id"]: r for r in cur.execute(q).fetchall()}
+        conn.execute("UPDATE articles SET cluster_id = NULL, cluster_similarity = NULL, "
+                     "cluster_assignment = NULL, clustered_at = NULL")
+        conn.execute("TRUNCATE article_clusters CASCADE")
+        conn.commit()
+
+        st = ClusterState(model=MODEL)
+        written = 0
+        for k, (aid, a) in enumerate(zip(ids, stream)):
+            st.assign(aid, a["v"], a["t"], a["domain"], a["title"], a["lang"], _mem_params())
+            if k in (40, 80):                                           # flush mid-stream: exercises updates
+                written += _apply(conn, st)["articles_written"]
+        written += _apply(conn, st)["articles_written"]
+        assert written == len(stream)
+        with conn.cursor(row_factory=dict_row) as cur:
+            got = {r["canonical_article_id"]: r for r in cur.execute(q).fetchall()}
+        assert set(got) == set(ref)
+        for key, r in ref.items():
+            g = got[key]
+            assert g["members"] == r["members"]
+            for col in ("article_count", "outlet_count", "outlet_set", "language_set",
+                        "first_seen_at", "last_seen_at", "representative_article_id", "headline", "status"):
+                assert g[col] == r[col], (key, col)
+            assert np.allclose(_vec(g["centroid_sum"]), _vec(r["centroid_sum"]), atol=1e-5)
+            assert np.allclose(_vec(g["representative"]), _vec(r["representative"]), atol=2e-3)
+            assert np.allclose(_vec(g["anchor"]), _vec(r["anchor"]), atol=2e-3)
+
+    def test_state_from_db_continues_identically(self, conn):
+        """Cold start (full load from the DB) gives the same decisions as staying in memory."""
+        from enrichment.memory_clustering import ClusterState
+        from enrichment.cluster_state_sync import apply_delta, load_full
+        stream = _story_stream(160, seed=13)
+        ids = [add_article(conn, domain=a["domain"], title=a["title"], published=a["t"]) for a in stream]
+        live = ClusterState(model=MODEL)
+        for aid, a in list(zip(ids, stream))[:100]:
+            live.assign(aid, a["v"], a["t"], a["domain"], a["title"], a["lang"], _mem_params())
+        _apply(conn, live)
+        cold = load_full(_fetcher(conn), MODEL, window_since=T0 - timedelta(days=1),
+                         db_now=lambda: live.synced_at)
+        assert len(cold) == len(live)
+        assert apply_delta(_fetcher(conn), cold, MODEL) == 0        # nothing changed since
+        for aid, a in list(zip(ids, stream))[100:]:
+            x = live.assign(aid, a["v"], a["t"], a["domain"], a["title"], a["lang"], _mem_params())
+            y = cold.assign(aid, a["v"], a["t"], a["domain"], a["title"], a["lang"], _mem_params())
+            assert x.action == y.action
+            assert (x.cluster_id == y.cluster_id) or x.action == "seed"   # new seeds get fresh uuids
+            assert x.similarity == pytest.approx(y.similarity, abs=1e-6)
+
+    def test_delta_drops_merged_and_picks_up_changes(self, conn):
+        from enrichment.memory_clustering import ClusterState
+        from enrichment.cluster_state_sync import apply_delta
+        st = ClusterState(model=MODEL)
+        a1 = add_article(conn)
+        a2 = add_article(conn, domain="b.com")
+        st.assign(a1, unit(1), T0, "a.com", "t", "en", _mem_params())
+        st.assign(a2, unit(2), T0, "b.com", "t", "en", _mem_params())
+        _apply(conn, st)
+        c1, c2 = st.ids
+        assert conn.execute("SELECT wizer_merge_clusters(%s, %s)", (c1, c2)).fetchone()[0]
+        conn.commit()
+        assert apply_delta(_fetcher(conn), st, MODEL) == 2
+        assert st.ids == [c1] and st.counts[0] == 2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bulk I/O (docs/bulk_io_migration.sql)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestBulkIO:
+
+    def test_apply_is_idempotent_and_never_revives_tombstones(self, conn):
+        from enrichment.memory_clustering import ClusterState
+        st = ClusterState(model=MODEL)
+        aid = add_article(conn)
+        st.assign(aid, unit(1), T0, "a.com", "t", "en", _mem_params())
+        clusters, articles = st.pending_changes()
+        for _ in range(2):                                              # retry of the same batch
+            row = postgrest_call(conn, "wizer_apply_cluster_changes",
+                                 {"p_model": MODEL, "p_clusters": clusters, "p_articles": articles})[0]
+        assert conn.execute("SELECT count(*) FROM article_clusters").fetchone()[0] == 1
+        assert row["articles_written"] == 0                             # already stamped
+        conn.execute("UPDATE article_clusters SET status = 'merged'")
+        conn.commit()
+        clusters[0]["is_new"] = False
+        clusters[0]["article_count"] = 99
+        postgrest_call(conn, "wizer_apply_cluster_changes",
+                       {"p_model": MODEL, "p_clusters": clusters, "p_articles": []})
+        assert conn.execute("SELECT status, article_count FROM article_clusters").fetchone() == ("merged", 1)
+
+    def test_save_enrichment_batch(self, conn, backend):
+        a1 = add_article(conn)
+        a2 = add_article(conn)
+        seeded = assign(backend, a1, unit(1))
+        conn.execute("UPDATE articles SET enrich_error = 'old failure' WHERE id = %s", (a1,))
+        conn.execute("INSERT INTO article_entities (article_id, entity_text, entity_type, salience) "
+                     "VALUES (%s, 'stale', 'ORG', 0.5)", (a1,))
+        conn.commit()
+        before = cluster(conn, seeded["cluster_id"])["updated_at"]
+        items = [
+            {"id": a1, "update": {"category": "politics", "word_count": 120, "ai_tag": ["elections"],
+                                  "keywords": ["vote"], "sentiment_score": 0.4, "image_phash": -5},
+             "entities": [{"entity_text": "Modi", "entity_type": "PERSON", "salience": 0.9}],
+             "cluster_entities": [{"text": "Modi", "type": "PERSON"}], "entity_keys": ["modi"]},
+            {"id": a2, "update": {"category": "sports"}, "entities": []},
+            {"id": 987654321, "update": {"category": "ghost"}},             # deleted meanwhile
+        ]
+        n = postgrest_call(conn, "wizer_save_enrichment_batch", {"p_items": items})
+        assert list(n[0].values())[0] == 2
+        with conn.cursor(row_factory=dict_row) as cur:
+            r = cur.execute("SELECT * FROM articles WHERE id = %s", (a1,)).fetchone()
+        assert r["category"] == "politics" and r["ai_tag"] == ["elections"] and r["image_phash"] == -5
+        assert r["enriched_at"] is not None and r["enrich_error"] is None
+        ents = conn.execute("SELECT entity_text FROM article_entities WHERE article_id = %s", (a1,)).fetchall()
+        assert ents == [("Modi",)]
+        c = cluster(conn, seeded["cluster_id"])
+        assert c["top_entities"][0]["text"] == "Modi" and c["entity_set"] == ["modi"]
+        assert c["updated_at"] == before                                # delta sync untouched
+
+    def test_record_feed_polls(self, conn):
+        conn.execute("TRUNCATE feeds CASCADE")
+        specs = [(2, True, None), (4, True, None), (0, True, None), (0, False, "dormant"), (1, True, None)]
+        ids = [conn.execute("INSERT INTO feeds (feed_url, fail_count, articles_found, is_active, disabled_reason) "
+                            "VALUES (%s, %s, 10, %s, %s) RETURNING id",
+                            (f"https://f{i}.com/rss", fc, act, rsn)).fetchone()[0]
+               for i, (fc, act, rsn) in enumerate(specs)]
+        conn.commit()
+        items = [
+            {"id": str(ids[0]), "success": True, "new_articles": 3},
+            {"id": str(ids[1]), "success": False},                       # 5th failure → circuit opens
+            {"id": str(ids[2]), "success": True, "new_articles": 0, "dormant": True},
+            {"id": str(ids[3]), "success": True, "new_articles": 2, "reactivate": True},
+            {"id": str(ids[4]), "success": False},
+        ]
+        n = postgrest_call(conn, "wizer_record_feed_polls", {"p_items": items, "p_max_errors": 5})
+        assert list(n[0].values())[0] == 5
+        with conn.cursor(row_factory=dict_row) as cur:
+            f = {str(r["id"]): r for r in cur.execute("SELECT * FROM feeds").fetchall()}
+        r0, r1, r2, r3, r4 = (f[str(i)] for i in ids)
+        assert r0["fail_count"] == 0 and r0["articles_found"] == 13 and r0["last_new_article_at"] is not None
+        assert r1["fail_count"] == 5 and not r1["is_active"] and r1["disabled_reason"] == "errors"
+        assert not r2["is_active"] and r2["disabled_reason"] == "dormant" and r2["articles_found"] == 10
+        assert r3["is_active"] and r3["disabled_reason"] is None and r3["articles_found"] == 12
+        assert r4["fail_count"] == 2 and r4["is_active"] and r4["last_success_at"] is None

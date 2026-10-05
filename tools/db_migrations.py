@@ -31,6 +31,7 @@ MIGRATION_ORDER: list[str] = [
     "clustering_v2_migration.sql",       # story clustering v2 (current)
     "archive_migration.sql",             # Parquet archive log + verified-only pruning
     "enrichment_queue_v2_migration.sql", # queue v2: oldest-first, no age gate, crawl failures, retries
+    "bulk_io_migration.sql",             # bulk writes: in-memory clustering result, enrichment, feed polls
 ]
 
 # Roles that Supabase provides and some migrations GRANT to / create policies
