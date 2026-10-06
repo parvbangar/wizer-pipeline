@@ -140,6 +140,7 @@ ART_COL_LANG_CODE     = "language_code"
 # poll_interval_mins in your DB overrides these defaults when set.
 # ─────────────────────────────────────────────────────────────────────────────
 CADENCE_POLL_INTERVALS: dict[str, int] = {
+    "official":        15,    # 15 minutes  — PIB, RBI, SEBI, NSE/BSE filings (pipeline/official.py)
     "breaking_news":   60,    # 60 minutes  — live news desks, wire agencies
     "multiple_daily":  180,   # 3 hours     — major outlets publishing 5+ times/day
     "daily":           720,   # 12 hours    — once-a-day publishers

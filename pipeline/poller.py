@@ -85,6 +85,7 @@ from pipeline.config import (
 from pipeline.handoff import Handoff
 from pipeline.sitemap import (FEED_TYPE_NEWS_SITEMAP, SITEMAP_MAX_BYTES, fetch_news_sitemap,
                               since_for_feed)
+from pipeline import official
 
 # A news-sitemap index can mean dozens of child downloads.
 _SITEMAP_FETCH_DEADLINE_SECONDS = 180
@@ -259,6 +260,16 @@ def _is_sitemap(feed: dict) -> bool:
     return (feed.get("feed_type") or "").strip().lower() == FEED_TYPE_NEWS_SITEMAP
 
 
+def _is_official(feed: dict) -> bool:
+    return (feed.get("feed_type") or "").strip().lower() in official.FEED_TYPES
+
+
+def _fetch_official_blocking(feed: dict) -> tuple[list[dict], dict, str | None]:
+    """An official-source adapter (pipeline/official.py) — same return shape as _fetch_rss_blocking."""
+    url = feed.get(FEED_COL_FINAL_URL) or feed[FEED_COL_URL]
+    return official.fetch_official(feed["feed_type"].strip().lower(), url)
+
+
 def _fetch_sitemap_blocking(feed: dict) -> tuple[list[dict], dict, str | None]:
     """Fetch a news sitemap feed (pipeline/sitemap.py) — same return shape as _fetch_rss_blocking."""
     url = feed.get(FEED_COL_FINAL_URL) or feed[FEED_COL_URL]
@@ -428,6 +439,9 @@ async def poll_one_feed(
         try:
             if _is_sitemap(feed):
                 fetch = loop.run_in_executor(None, _fetch_sitemap_blocking, feed)
+                limit = _SITEMAP_FETCH_DEADLINE_SECONDS
+            elif _is_official(feed):
+                fetch = loop.run_in_executor(None, _fetch_official_blocking, feed)
                 limit = _SITEMAP_FETCH_DEADLINE_SECONDS
             else:
                 fetch = loop.run_in_executor(None, _fetch_rss_blocking, feed_url)

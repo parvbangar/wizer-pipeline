@@ -1,0 +1,50 @@
+name: Ingest — official (every 15 min)
+
+# Official Indian sources (pipeline/official.py, docs/OFFICIAL_SOURCES.md):
+# PIB releases in 14 languages, NSE + BSE corporate filings, SEBI's full
+# listing, RBI, TRAI and state-government feeds. Every 15 minutes because the
+# exchange and PIB listings reset at midnight IST and regulators move markets.
+# Discovery only (no crawl): the processing workflow crawls the PDFs / pages.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ingest-official
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14        # must finish before the next 15-min window
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-ingest.txt
+
+      - run: pip install -r requirements-ingest.txt
+
+      - name: Poll official sources
+        env:
+          SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY:   ${{ secrets.SUPABASE_SERVICE_KEY }}
+          WIZER_HANDOFF_PATH:     handoff/official.jsonl.gz
+          INGEST_TIME_BUDGET_MINUTES: "10"
+          MAX_CONCURRENT_FEEDS:   "8"
+        run: python main.py --cadence official
+
+      # Inserted articles for the processing workflow (process.yml).
+      - name: Upload hand-off
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: handoff
+          path: handoff/
+          retention-days: 7
+          if-no-files-found: ignore

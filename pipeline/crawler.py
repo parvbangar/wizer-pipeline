@@ -66,7 +66,7 @@ import urllib.parse
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
@@ -1174,6 +1174,22 @@ def _make_safe_entry(entry: dict) -> dict:
 # MAIN ENTRY POINT
 # ─────────────────────────────────────────────────────────────────────────────
 
+_ZONE_AT_END = re.compile(r"(?:[+-]\d{2}:?\d{2}|(?<=\d)Z|\bGMT|\bUTC|\b[A-Z]{2,5}T)\s*$")
+_INDIC = {"hi", "mr", "bn", "ta", "te", "kn", "ml", "gu", "pa", "ur", "or", "as", "sa", "ne", "kok", "mai", "mni"}
+
+
+def _naive_feed_date(entry: dict) -> bool:
+    """True if the feed's date string carries no zone (only an RFC-822-style text date can be judged)."""
+    raw = entry.get("published") or entry.get("updated") or ""
+    return bool(raw) and isinstance(raw, str) and not _ZONE_AT_END.search(raw.strip())
+
+
+def _is_indian_feed(feed: dict) -> bool:
+    cc = (feed.get("country_code") or "").upper()
+    lang = (feed.get("language_code") or "").split("-")[0].lower()
+    return cc in ("IN", "IND") or lang in _INDIC
+
+
 def discover_article(
     rss_entry:     dict,
     feed:          dict,
@@ -1220,12 +1236,91 @@ def discover_article(
     if entry_lang and len(entry_lang) <= 10:
         article.language_code = entry_lang
     article.published_at = _extract_publish_date(rss_entry, {}, {})
+    if article.published_at and _naive_feed_date(rss_entry) and _is_indian_feed(feed):
+        # feedparser reads "Tue, 06 Oct 2026 10:30:00" (no zone — RBI, many
+        # Indian CMSs) as UTC; the publisher meant IST: 5 h 30 min earlier.
+        article.published_at = article.published_at - timedelta(hours=5, minutes=30)
     if article.published_at and article.published_at > article.crawled_at:
         article.published_at = article.crawled_at
     if article.full_text:
         article.is_crawled = True
         article.crawl_strategy = "rss_content"
     return article
+
+
+PDF_MAX_BYTES = 15 * 1024 * 1024
+PDF_MAX_PAGES = 40
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _fetch_pdf_text(url: str, timeout: float = 30) -> str | None:
+    """
+    Text of a PDF (exchange filings, SEBI orders, RBI notifications).
+    None if it is not a PDF or cannot be read. pypdf: pure Python, BSD.
+    """
+    try:
+        import io
+        from pypdf import PdfReader
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/pdf,*/*"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read(PDF_MAX_BYTES + 1)
+        if len(data) > PDF_MAX_BYTES or not data.startswith(b"%PDF"):
+            return None
+        reader = PdfReader(io.BytesIO(data))
+        parts = []
+        for page in reader.pages[:PDF_MAX_PAGES]:
+            try:
+                parts.append(page.extract_text() or "")
+            except Exception:            # one broken page never loses the document
+                continue
+        text = re.sub(r"[ \t]+", " ", "\n".join(parts))
+        text = re.sub(r"\n\s*\n+", "\n\n", text).strip()
+        return text or None
+    except Exception as e:
+        log.debug("PDF fetch/extract failed for %s: %s", url, e)
+        return None
+
+
+def _is_pdf_url(url: str) -> bool:
+    return urllib.parse.urlparse(url).path.lower().endswith(".pdf")
+
+
+_PIB_POSTED = re.compile(r"Posted On:\s*(\d{1,2} [A-Za-z]{3} \d{4} \d{1,2}:\d{2}\s*[AP]M)", re.I)
+
+
+def _page_specific_date(html: str, url: str) -> datetime | None:
+    """Publish dates some official pages print but do not mark up (PIB: 'Posted On: 06 OCT 2026 10:00AM', IST)."""
+    if "pib.gov.in" in url:
+        m = _PIB_POSTED.search(html)
+        if m:
+            try:
+                return datetime.strptime(re.sub(r"\s+", " ", m.group(1)).upper().replace(" AM", "AM").replace(" PM", "PM"),
+                                         "%d %b %Y %I:%M%p").replace(tzinfo=_IST).astimezone(timezone.utc)
+            except ValueError:
+                return None
+    return None
+
+
+_LINKED_PDF = re.compile(r"""(?:href|src)=['"]([^'"]+?\.pdf)(?:[?#][^'"]*)?['"]""", re.I)
+
+
+_IFRAME_SRC = re.compile(r"""<iframe[^>]+src=['"]([^'"]+)['"]""", re.I)
+
+
+def _linked_pdf(html: str, base_url: str) -> str | None:
+    """
+    The document a thin page wraps: an <iframe> first (SEBI embeds its order in
+    a PDF.js viewer: src='../web/?file=<pdf>'), else the first linked .pdf.
+    """
+    candidates = [m.group(1) for m in _IFRAME_SRC.finditer(html)] + [m.group(1) for m in _LINKED_PDF.finditer(html)]
+    for raw in candidates:
+        link = html_module.unescape(raw)
+        inner = urllib.parse.parse_qs(urllib.parse.urlparse(link).query).get("file")
+        if inner:
+            link = inner[0]
+        if urllib.parse.urlparse(link).path.lower().endswith(".pdf"):
+            return urllib.parse.urljoin(base_url, link)
+    return None
 
 
 def crawl_record(record: dict) -> dict:
@@ -1246,6 +1341,15 @@ def crawl_record(record: dict) -> dict:
     try:
         domain_key = _extract_domain(url)
         paywalled = bool(record.get("paywalled")) or is_paywalled(url)
+        if _is_pdf_url(url):
+            if _domain_failures.is_tripped(domain_key):
+                return {"is_crawled": False, "crawl_strategy": "failed"}
+            text = _fetch_pdf_text(url)
+            _domain_failures.record(domain_key, success=text is not None)
+            if not text:
+                return {"is_crawled": False, "crawl_strategy": "failed"}
+            return {"full_text": _strip_nul(text[:MAX_ARTICLE_BODY_CHARS]), "is_crawled": True,
+                    "crawl_strategy": "pdf"}
         if _domain_failures.is_tripped(domain_key):
             html, strategy = None, "failed"
         else:
@@ -1274,8 +1378,16 @@ def crawl_record(record: dict) -> dict:
         author = _extract_author({}, og, jsonld)
         if author:
             out["author"] = author[:300]
+        # A thin HTML page that links its document as a PDF (SEBI orders,
+        # circulars): the PDF IS the article.
+        if len(full_text) < 400:
+            pdf_url = _linked_pdf(html, url)
+            if pdf_url:
+                pdf_text = _fetch_pdf_text(pdf_url)
+                if pdf_text and len(pdf_text) > len(full_text):
+                    full_text, strategy = pdf_text, f"{strategy}+pdf"
         if not record.get("published_at"):
-            page_date = _extract_publish_date({}, og, jsonld)
+            page_date = _extract_publish_date({}, og, jsonld) or _page_specific_date(html, url)
             if page_date:
                 now = datetime.now(timezone.utc)
                 out["published_at"] = min(page_date, now).astimezone(timezone.utc).isoformat()

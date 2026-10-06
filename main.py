@@ -95,7 +95,7 @@ Examples:
     parser.add_argument(
         "--cadence",
         choices=[
-            "breaking_news", "multiple_daily", "daily",
+            "official", "breaking_news", "multiple_daily", "daily",
             "several_weekly", "weekly", "monthly", "unknown",
         ],
         default=None,

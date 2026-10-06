@@ -11,9 +11,12 @@ For each domain:
   2. each candidate is fetched with the production reader
      (pipeline.sitemap.fetch_news_sitemap) and measured: entries published in
      the last 24 h, share carrying the news:news protocol, languages;
-  3. keep every candidate with ≥ MIN_24H fresh entries, dropping one whose
-     fresh URLs are ≥ 70 % covered by a bigger kept one (the same list
-     under two names);
+  3. keep a candidate only if it is a real news sitemap: ≥ MIN_24H fresh
+     entries, at least half carrying the news:news protocol (a per-article
+     publication date + title — a bare <lastmod> proves nothing), and few
+     query-string URLs (2026-10-06: liveindia.tv served ~1,700 random
+     "/?h=<n>" URLs under nine sitemap names). Drop one whose fresh URLs are
+     ≥ 70 % covered by a bigger kept one (the same list under two names);
   4. --register upserts the kept sitemaps into `feeds` as
      feed_type='news_sitemap', update_cadence='breaking_news' (polled hourly),
      with the majority news:language as language_code.
@@ -150,8 +153,15 @@ def discover(host: str, now: datetime) -> dict:
         except Exception as e:
             log.debug("%s: %s", url, e)
             m = None
-        if m and m["fresh_24h"] >= MIN_24H:
-            measured.append(m)
+        if not m or m["fresh_24h"] < MIN_24H:
+            continue
+        if m["news_protocol"] < 0.5 * m["fresh_24h"]:
+            result["rejected"].append({"url": url, "reason": "not news-sitemap protocol"})
+            continue
+        if sum("?" in u for u in m["_urls"]) > 0.3 * len(m["_urls"]):
+            result["rejected"].append({"url": url, "reason": "query-string URLs"})
+            continue
+        measured.append(m)
     measured.sort(key=lambda m: (m["news_protocol"] > 0, m["fresh_24h"]), reverse=True)
     for m in measured:
         if any(len(m["_urls"] & k["_urls"]) >= OVERLAP_DROP * len(m["_urls"]) for k in result["kept"]):
@@ -165,9 +175,12 @@ def discover(host: str, now: datetime) -> dict:
 
 def register(results: list[dict], publisher_names: dict[str, str]) -> int:
     from pipeline.db import get_client
-    rows = []
+    rows, seen = [], set()
     for r in results:
         for m in r["kept"]:
+            if m["url"] in seen:            # the same sitemap reached from two host spellings
+                continue
+            seen.add(m["url"])
             lang = next((k for k in m["languages"] if k != "?"), None)
             rows.append({
                 "feed_url": m["url"],
@@ -185,8 +198,8 @@ def register(results: list[dict], publisher_names: dict[str, str]) -> int:
                 "avg_items_per_day": m["fresh_24h"],
                 "item_count": m["fresh_24h"],
             })
-    if rows:
-        get_client().table("feeds").upsert(rows, on_conflict="feed_url").execute()
+    for i in range(0, len(rows), 200):
+        get_client().table("feeds").upsert(rows[i:i + 200], on_conflict="feed_url").execute()
     return len(rows)
 
 
@@ -214,7 +227,12 @@ def main() -> int:
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
         results = list(ex.map(lambda h: discover(h, now), hosts))
 
-    kept = [(r["domain"], m) for r in results for m in r["kept"]]
+    kept, seen_urls = [], set()
+    for r in results:
+        for m in r["kept"]:
+            if m["url"] not in seen_urls:          # one sitemap reached via several host spellings
+                seen_urls.add(m["url"])
+                kept.append((r["domain"], m))
     total = sum(m["fresh_24h"] for _, m in kept)
     for d, m in sorted(kept, key=lambda x: -x[1]["fresh_24h"]):
         print(f"  {m['fresh_24h']:6d}/24h  {d:40s} {m['url']}  {m['languages']}")

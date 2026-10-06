@@ -94,11 +94,18 @@ class TestRequirementsIngest:
 
     def test_ingest_workflows_use_it(self):
         wfs = list((ROOT / ".github" / "workflows").glob("ingest-*.yml"))
-        assert len(wfs) == 6
+        assert len(wfs) == 7                     # 6 cadences + official (every 15 min)
+        process = (ROOT / ".github" / "workflows" / "process.yml").read_text(encoding="utf-8")
         for wf in wfs:
             text = wf.read_text(encoding="utf-8")
             assert "pip install -r requirements-ingest.txt" in text, wf.name
             assert "pip install -r requirements.txt" not in text, wf.name
+            # Every ingest run must hand its articles to processing, end before
+            # its timeout, and trigger process.yml — or articles are lost.
+            assert "WIZER_HANDOFF_PATH" in text and "INGEST_TIME_BUDGET_MINUTES" in text, wf.name
+            assert "upload-artifact" in text and "if: always()" in text, wf.name
+            name = text.splitlines()[0].removeprefix("name:").strip()
+            assert f'"{name}"' in process, f"{wf.name} does not trigger process.yml"
 
 
 # ── migrations (items 2, 4): static consistency checks ──────────────────────

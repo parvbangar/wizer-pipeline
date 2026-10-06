@@ -19,6 +19,7 @@ name: Layer 2 — Process ingested articles
 on:
   workflow_run:
     workflows:
+      - "Ingest — official (every 15 min)"
       - "Ingest — breaking_news (every 1 hour)"
       - "Ingest — multiple_daily (every 3 hours)"
       - "Ingest — daily + unknown (every 12 hours)"
