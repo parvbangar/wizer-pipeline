@@ -726,8 +726,16 @@ def upsert_articles_returning(rows: list[dict]) -> tuple[list[dict], int]:
         duplicates = len(rows) - len(inserted)
 
     except Exception as e:
+        if _is_transient(e):
+            # The database is overloaded or unreachable: retrying every row on
+            # its own multiplies the load on an already-stalled instance (the
+            # 2026-10-05 smoke test). Nothing is lost — the rows are not in the
+            # database, so the next poll of this feed finds them new again.
+            log.error("Batch upsert of %d rows failed (%s) — left for the next poll", len(rows), e)
+            return [], 0
         log.error("Batch upsert failed: %s — retrying row by row", e)
         # Fall back to individual inserts so partial batches aren't lost
+        # (a bad row — e.g. a constraint violation — must not sink the batch)
         for row in rows:
             try:
                 row_resp = _retry(lambda: get_client().table(TABLE_ARTICLES).upsert(

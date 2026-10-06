@@ -30,7 +30,7 @@ jobs:
           SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY:   ${{ secrets.SUPABASE_SERVICE_KEY }}
           WIZER_HANDOFF_PATH:     handoff/breaking_news.jsonl.gz
-          MAX_CONCURRENT_FEEDS:   "20"
+          MAX_CONCURRENT_FEEDS:   "8"
           MAX_CONCURRENT_ARTICLES: "8"
         run: python main.py --cadence breaking_news
 

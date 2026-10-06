@@ -24,6 +24,7 @@ see the rollout section below for exactly which files to run there. The canonica
 | 12 | `archive_migration.sql` | article archive: `article_archive_log`, export pages, verified-only `wizer_prune_archived_day()` |
 | 13 | `enrichment_queue_v2_migration.sql` | queue v2: oldest-first by ingestion time, no age gate, crawl failures claimed, daily dead-letter retries, new `enrichment_queue_health` |
 | 14 | `bulk_io_migration.sql` | bulk I/O: cluster state fetch, `wizer_apply_cluster_changes`, `wizer_fetch_unclustered_ingested`, `wizer_save_enrichment_batch`, `wizer_record_feed_polls` |
+| 15 | `articles_index_cleanup_migration.sql` | drop 17 duplicate / never-used indexes on `articles` (each insert maintained 26) |
 
 Files 6–9 are kept so the history replays cleanly on a fresh database. Their functions are
 not used any more. Two of them previously **could not be re-run**: each redefined

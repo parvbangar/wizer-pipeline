@@ -458,6 +458,18 @@ class TestUpsertCounting:
         assert (inserted, dups) == (1, 0)
         assert len(rows) - inserted - dups == 1             # one failure, derivable
 
+    def test_timeout_does_not_retry_row_by_row(self, install):
+        """An overloaded DB must not be hit once per row (2026-10-05 smoke test)."""
+        calls = {"n": 0}
+
+        def handler(q):
+            calls["n"] += 1
+            raise Exception("The read operation timed out")
+        install(handler)
+        rows = [{"url_hash": i, "url": str(i)} for i in range(20)]
+        assert db.upsert_articles(rows) == (0, 0)
+        assert calls["n"] <= 2                              # the batch + its one reconnect retry
+
     def test_batch_path(self, install):
         install(lambda q: FakeResp([{"url_hash": 1}]))
         assert db.upsert_articles([{"url_hash": 1}, {"url_hash": 2}]) == (1, 1)
