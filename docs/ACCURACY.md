@@ -79,4 +79,4 @@ is too small to detect changes under ~8–10 points and covers 2 of 13 languages
 | 3 | Learned cluster scorer (dense + lexical + entity + time features) | +3–8 strict F1 (literature: +5–11) |
 | 4 | IndicNER (11 languages) + Wikidata alias-table entity linking | Indic NER from ~0 to 72–83 F1 |
 | 5 | Embedding A/B: e5-large-instruct vs e5-base (ONNX int8) | Decided on the 13-language gold set |
-| 6 | ONNX int8 for e5-base | −65 % embedding time; re-calibrate |
+| 6 | ONNX int8 for e5-base | **Measured 2026-10-06, not adopted yet** (`tools/cluster_eval/onnx_int8.py`): 2.6× faster (41 → 16 ms/headline, 4 threads) and strict AUC 0.9297 → 0.9272, so ranking quality is essentially unchanged. But 33 of 400 calibrated join decisions flip at 0.85 (mean similarity shift 0.016; 105 pairs lie within ±0.02 of the threshold). Adopting it needs re-calibrated thresholds and a separate model id, so int8 and fp32 vectors never share a cluster. It is a planned cutover, worth it only if runner CPU, not the database, limits clustering throughput |
