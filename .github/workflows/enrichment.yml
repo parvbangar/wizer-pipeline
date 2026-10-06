@@ -97,4 +97,8 @@ jobs:
           if [ "${{ github.event.inputs.force }}" = "true" ]; then
             FORCE_FLAG="--force"
           fi
-          python enrich.py --batch-size $ENRICH_BATCH_SIZE $FORCE_FLAG
+          if [ -n "$FORCE_FLAG" ]; then
+            python enrich.py --batch-size $ENRICH_BATCH_SIZE $FORCE_FLAG
+          else
+            python enrich.py --sweep --batch-size $ENRICH_BATCH_SIZE
+          fi

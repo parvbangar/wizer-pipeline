@@ -34,8 +34,8 @@ log = logging.getLogger(__name__)
 
 HANDOFF_FIELDS = (
     "id", "feed_id", "url", "title", "description", "full_text", "top_image_url",
-    "published_at", "crawled_at", "domain", "language_code", "country_code",
-    "iab_tier1", "iab_tier2", "is_crawled", "is_duplicate",
+    "author", "published_at", "crawled_at", "domain", "language_code", "country_code",
+    "iab_tier1", "iab_tier2", "is_crawled", "is_duplicate", "crawl_strategy",
 )
 
 
@@ -48,12 +48,23 @@ def _hash_key(value) -> int | None:
 
 
 class Handoff:
-    """Collects the articles a run inserted, matched to their crawled bodies."""
+    """
+    Collects the articles a run inserted, matched to their crawled bodies.
 
-    def __init__(self, max_body_chars: int | None = None) -> None:
+    With `path`, every add_inserted() call is APPENDED to the file at once (one
+    gzip member per call — gzip readers treat concatenated members as one
+    stream). A run killed by its job timeout therefore keeps everything it had
+    inserted up to that moment.
+    """
+
+    def __init__(self, max_body_chars: int | None = None, path: str | Path | None = None) -> None:
         self.records: list[dict] = []
         self.unmatched = 0
         self._max_body = max_body_chars
+        self.path = Path(path) if path else None
+        if self.path is not None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_bytes(b"")              # this run's file starts empty
 
     def __len__(self) -> int:
         return len(self.records)
@@ -64,6 +75,7 @@ class Handoff:
         articles:      the CrawledArticle objects they were built from
         """
         by_hash = {a.url_hash: a for a in articles}
+        added: list[dict] = []
         for row in inserted_rows:
             art = by_hash.get(_hash_key(row.get("url_hash")))
             if art is None or row.get("id") is None:
@@ -72,10 +84,26 @@ class Handoff:
             rec = {k: row.get(k) for k in HANDOFF_FIELDS}
             body = art.full_text or ""
             rec["full_text"] = body[: self._max_body] if self._max_body else body
-            self.records.append(rec)
+            rec["paywalled"] = bool(getattr(art, "paywalled", False))
+            added.append(rec)
+        self.records.extend(added)
+        if self.path is not None and added:
+            with gzip.open(self.path, "at", encoding="utf-8") as f:
+                for rec in added:
+                    f.write(json.dumps(rec, ensure_ascii=False, default=str))
+                    f.write("\n")
 
-    def write(self, path: str | Path) -> int:
-        """Write all records (an empty file when there are none, so the artifact always exists)."""
+    def write(self, path: str | Path | None = None) -> int:
+        """
+        Finish the hand-off. With incremental appends (`path` given to the
+        constructor) the records are already on disk — only the summary is
+        logged. Otherwise all records are written to `path` now.
+        """
+        if self.path is not None and (path is None or Path(path) == self.path):
+            if self.unmatched:
+                log.warning("Hand-off: %d inserted rows had no matching crawl result", self.unmatched)
+            log.info("Hand-off: wrote %d articles to %s", len(self.records), self.path)
+            return len(self.records)
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")

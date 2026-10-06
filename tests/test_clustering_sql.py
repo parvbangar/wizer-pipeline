@@ -1233,3 +1233,32 @@ class TestHandoffJobs:
         c = cluster(conn, seeded["cluster_id"])
         assert c["top_entities"][0]["text"] == "Smit Machchhar" and c["entity_set"] == ["smit machchhar"]
         assert c["top_entities"][0]["count"] == 1               # only article 0 is in this cluster
+
+
+class TestSaveCrawlColumns:
+
+    def test_crawl_merge_rules(self, conn):
+        keep = add_article(conn, title="Feed title", published=T0)
+        conn.execute("UPDATE articles SET description = 'rss desc', is_crawled = false WHERE id = %s", (keep,))
+        blank = add_article(conn, title="", published=None)
+        conn.commit()
+        items = [
+            {"id": keep, "update": {"category": "politics"},
+             "crawl": {"title": "Page title", "title_simhash": 7, "description": "page desc",
+                       "top_image_url": "https://x/i.jpg", "author": "A", "published_at": "2020-01-01T00:00:00+00:00",
+                       "og_tags": {"og:title": "Page title"}, "is_crawled": True, "crawl_strategy": "default"}},
+            {"id": blank, "update": {}, "crawl": {"title": "Page title", "title_simhash": 7,
+                                                  "published_at": "2026-10-04T00:00:00+00:00",
+                                                  "is_crawled": False, "crawl_strategy": "failed"}},
+        ]
+        postgrest_call(conn, "wizer_save_enrichment_batch", {"p_items": items})
+        with conn.cursor(row_factory=dict_row) as cur:
+            a = cur.execute("SELECT * FROM articles WHERE id = %s", (keep,)).fetchone()
+            b = cur.execute("SELECT * FROM articles WHERE id = %s", (blank,)).fetchone()
+        assert a["title"] == "Feed title"                       # feed title stays canonical
+        assert a["published_at"] == T0                          # an existing date is never replaced
+        assert a["description"] == "page desc" and a["author"] == "A" and a["og_tags"] == {"og:title": "Page title"}
+        assert a["is_crawled"] and a["crawl_strategy"] == "default" and a["enriched_at"] is not None
+        assert b["title"] == "Page title" and b["title_simhash"] == 7    # filled because empty
+        assert b["published_at"] == datetime(2026, 10, 4, tzinfo=timezone.utc)
+        assert not b["is_crawled"] and b["crawl_strategy"] == "failed"

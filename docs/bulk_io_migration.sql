@@ -241,10 +241,15 @@ $$;
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 4. wizer_save_enrichment_batch — enrichment results for many articles
 --
---   p_items [{id, update: {<enrichment columns>}, entities: [{entity_text,
---             entity_type, salience}], cluster_entities: [{text, type}],
---             entity_keys: [text]}]
+--   p_items [{id, update: {<enrichment columns>}, crawl: {<crawl columns>},
+--             entities: [{entity_text, entity_type, salience}],
+--             cluster_entities: [{text, type}], entity_keys: [text]}]
 --
+--   - crawl (optional): what the deferred page crawl found
+--     (pipeline.crawler.crawl_record). Only keys present overwrite: the
+--     page's description / image / author / og_tags / crawl status; a title
+--     only if the row has none; a publish date only if the row has none.
+--     full_text is NOT stored here — bodies go to Storage (body_store.py);
 --   - articles: the enrichment columns are set from `update` (a missing key
 --     sets NULL — a step that failed produced nothing), enrich_error is
 --     cleared and enriched_at set LAST, in the same statement;
@@ -265,7 +270,8 @@ DECLARE
   v_updated integer := 0;
 BEGIN
   WITH it AS (
-    SELECT (x ->> 'id')::bigint AS id, coalesce(x -> 'update', '{}'::jsonb) AS u
+    SELECT (x ->> 'id')::bigint AS id, coalesce(x -> 'update', '{}'::jsonb) AS u,
+           coalesce(x -> 'crawl', '{}'::jsonb) AS c
       FROM jsonb_array_elements(coalesce(p_items, '[]'::jsonb)) AS x
   ), done AS (
     UPDATE articles AS a
@@ -282,6 +288,19 @@ BEGIN
            ai_org            = it.u -> 'ai_org',
            keywords          = it.u -> 'keywords',
            image_phash       = (it.u ->> 'image_phash')::bigint,
+           title             = CASE WHEN coalesce(a.title, '') = '' AND it.c ? 'title'
+                                    THEN left(it.c ->> 'title', 1000) ELSE a.title END,
+           title_simhash     = CASE WHEN coalesce(a.title, '') = '' AND it.c ? 'title_simhash'
+                                    THEN (it.c ->> 'title_simhash')::bigint ELSE a.title_simhash END,
+           description       = CASE WHEN it.c ? 'description' THEN left(it.c ->> 'description', 2000)
+                                    ELSE a.description END,
+           top_image_url     = CASE WHEN it.c ? 'top_image_url' THEN left(it.c ->> 'top_image_url', 500)
+                                    ELSE a.top_image_url END,
+           author            = CASE WHEN it.c ? 'author' THEN left(it.c ->> 'author', 300) ELSE a.author END,
+           published_at      = coalesce(a.published_at, (it.c ->> 'published_at')::timestamptz),
+           og_tags           = CASE WHEN it.c ? 'og_tags' THEN it.c -> 'og_tags' ELSE a.og_tags END,
+           is_crawled        = coalesce((it.c ->> 'is_crawled')::boolean, a.is_crawled),
+           crawl_strategy    = coalesce(it.c ->> 'crawl_strategy', a.crawl_strategy),
            enrich_error      = NULL,
            enriched_at       = now()
       FROM it

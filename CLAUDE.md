@@ -40,18 +40,27 @@ of scope so far); the `propensity_score` column is unused.
 Production runs on Supabase **Micro** (burstable CPU and disk I/O, no budget to upgrade).
 Using Postgres as the pipeline's workspace exhausted its credits, so:
 
-- **Ingest** (`ingest-*.yml`) writes article rows WITHOUT `full_text`. The inserted rows plus
-  their bodies go to a hand-off file (`pipeline/handoff.py`, `WIZER_HANDOFF_PATH`), uploaded
-  as the artifact `handoff`. Feed poll outcomes are written once per run
-  (`db.FeedPollBatch` → `wizer_record_feed_polls`).
+- **Ingest** (`ingest-*.yml`) only DISCOVERS. Each article is stored from feed metadata
+  (`crawler.discover_article`, no HTTP), WITHOUT `full_text`.
+  - Why: inline crawling let a 58-min run reach only 456 of 1,365 due feeds.
+  - The inserted rows go to a hand-off file (`pipeline/handoff.py`, `WIZER_HANDOFF_PATH`),
+    appended per feed so a killed run keeps them, and uploaded as the artifact `handoff`.
+  - Feed poll outcomes are written every 200 feeds (`db.FeedPollBatch` →
+    `wizer_record_feed_polls`).
+  - `INGEST_TIME_BUDGET_MINUTES` stops new feeds before the job timeout; feeds not
+    reached stay due.
 - **`process.yml`** runs after every ingest:
   - `cluster`: in-memory clustering (`cluster.py run --memory`, `enrichment/cluster_job.py`,
     `enrichment/memory_clustering.py`). Its work list is every unclustered article in the
     DB; its state is cached between runs (Actions cache, delta-synced).
-  - `enrich`: one shard per ~1,500 hand-off articles, up to 16 (`enrich.py --handoff --shard i --shards n`,
-    `enrichment/handoff_runner.py`), saved 100 at a time (`wizer_save_enrichment_batch`).
+  - `enrich`: one shard per ~1,500 hand-off articles, up to 16 (`enrich.py --handoff --shard i
+    --shards n`, `enrichment/handoff_runner.py`). Each article is crawled
+    (`crawler.crawl_record`, 32 in flight), then enriched. Results plus crawl columns are
+    saved 100 at a time (`wizer_save_enrichment_batch`).
+  - Bodies go to Supabase Storage, bucket `article-bodies` (`enrichment/body_store.py`),
+    never to Postgres. That bucket is the permanent full-text dataset.
 - **`enrichment.yml` is the sweeper.** Every 2 h, 4 runners claim articles ingested more than 6 h
-  ago that are still unenriched, and enriches them from title + description.
+  ago that are still unenriched, and crawl + enrich them the same way (`enrich.py --sweep`).
 - **`cluster.yml`** is a 2-hourly fallback of the same in-memory job.
 
 All bulk RPCs live in `docs/bulk_io_migration.sql`.

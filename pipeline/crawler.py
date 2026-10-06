@@ -140,6 +140,10 @@ class CrawledArticle:
     # Which fetch strategy succeeded (for debugging / monitoring)
     crawl_strategy: str = ""
 
+    # Paywall decision (feed flag or known domain) — not a DB column; travels in
+    # the hand-off so the deferred crawl (crawl_record) uses the right strategy.
+    paywalled: bool = False
+
     # Future fields (left empty for now)
     story_id:       str | None = None
     propensity_score: float | None = None
@@ -1169,6 +1173,118 @@ def _make_safe_entry(entry: dict) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN ENTRY POINT
 # ─────────────────────────────────────────────────────────────────────────────
+
+def discover_article(
+    rss_entry:     dict,
+    feed:          dict,
+    norm_url:      str,
+    hash_value:    int,
+    title_simhash: int,
+) -> CrawledArticle:
+    """
+    The article as the FEED describes it — no HTTP request.
+
+    Ingestion uses this when crawling is deferred (pipeline.config.CRAWL_AT_INGEST
+    = false): the row is stored right away from feed metadata, and the page is
+    fetched later on a processing runner (crawl_record, enrichment/handoff_runner.py).
+    Discovery of a feed then takes seconds instead of one crawl per entry, so a
+    run never times out with articles still unseen.
+
+    If the feed itself carries the full text (content:encoded), the article is
+    already complete: is_crawled=True, crawl_strategy='rss_content'.
+    """
+    rss_title       = html_module.unescape((rss_entry.get("title") or "").strip())
+    article = CrawledArticle(
+        feed_id        = str(feed.get("id", "")),
+        url            = norm_url,
+        url_hash       = hash_value,
+        title          = rss_title,
+        description    = _extract_rss_description(rss_entry),
+        full_text      = _extract_rss_fulltext(rss_entry),
+        author         = _extract_author(rss_entry, {}, {}),
+        top_image_url  = _extract_rss_image(rss_entry),
+        title_simhash  = title_simhash,
+        language       = feed.get("language_name", ""),
+        language_code  = feed.get("language_code", "en"),
+        country_code   = feed.get("country_code", ""),
+        iab_tier1      = feed.get("iab_tier1", ""),
+        iab_tier2      = feed.get("iab_tier2", ""),
+        feed_url       = feed.get("feed_url", ""),
+        domain         = feed.get("domain", ""),
+        publisher_name = feed.get("publisher_name", ""),
+        paywalled      = is_paywalled(norm_url, bool(feed.get("has_paywall", False))),
+    )
+    article.published_at = _extract_publish_date(rss_entry, {}, {})
+    if article.published_at and article.published_at > article.crawled_at:
+        article.published_at = article.crawled_at
+    if article.full_text:
+        article.is_crawled = True
+        article.crawl_strategy = "rss_content"
+    return article
+
+
+def crawl_record(record: dict) -> dict:
+    """
+    Fetch and extract the page of an article that is ALREADY STORED (deferred
+    crawl). `record` is a hand-off / database row: url, title, description,
+    top_image_url, author, published_at, paywalled (optional).
+
+    Returns only the columns the crawl improves — the same merge rules as
+    crawl_article: the stored (feed) title is kept unless empty; the page's
+    description / image / author win over the feed's; the page's publish date
+    only fills a missing one. A failed fetch returns
+    {"is_crawled": False, "crawl_strategy": "failed"} and nothing else.
+    Never raises.
+    """
+    url = record.get("url") or ""
+    out: dict = {}
+    try:
+        domain_key = _extract_domain(url)
+        paywalled = bool(record.get("paywalled")) or is_paywalled(url)
+        if _domain_failures.is_tripped(domain_key):
+            html, strategy = None, "failed"
+        else:
+            html, strategy = _fetch_with_fallbacks(url, paywalled=paywalled)
+            _domain_failures.record(domain_key, success=html is not None)
+        if html is None:
+            return {"is_crawled": False, "crawl_strategy": "failed"}
+
+        og     = _extract_og_tags(html)
+        jsonld = _extract_jsonld(html)
+        videos = _extract_video_metadata(html, og)
+        full_text = _best_fulltext(html, url)
+
+        if not (record.get("title") or "").strip():
+            fallback_title = html_module.unescape(og.get("og:title") or jsonld.get("headline") or "")
+            if isinstance(fallback_title, str) and fallback_title.strip():
+                out["title"] = fallback_title.strip()
+                out["title_simhash"] = simhash(out["title"])
+        jl_desc = jsonld.get("description")
+        desc = og.get("og:description") or (jl_desc if isinstance(jl_desc, str) else "")
+        if desc:
+            out["description"] = desc[:2000]
+        image = _pick_image(og, jsonld, record.get("top_image_url") or "", html, url)
+        if image:
+            out["top_image_url"] = image[:500]
+        author = _extract_author({}, og, jsonld)
+        if author:
+            out["author"] = author[:300]
+        if not record.get("published_at"):
+            page_date = _extract_publish_date({}, og, jsonld)
+            if page_date:
+                now = datetime.now(timezone.utc)
+                out["published_at"] = min(page_date, now).astimezone(timezone.utc).isoformat()
+        if videos:
+            og["_videos"] = videos
+        out["og_tags"] = _strip_nul(og)
+        out["full_text"] = _strip_nul(full_text[:MAX_ARTICLE_BODY_CHARS]) if full_text else ""
+        out["is_crawled"] = bool(full_text)
+        out["crawl_strategy"] = strategy
+        return out
+    except Exception as e:                              # a crawl bug must not cost the article
+        log.warning("crawl_record failed for %s: %s", url, e)
+        return {"is_crawled": False, "crawl_strategy": "failed"}
+
 
 def crawl_article(
     rss_entry:     dict,

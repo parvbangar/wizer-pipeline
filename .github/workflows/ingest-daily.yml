@@ -30,6 +30,7 @@ jobs:
           SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY:   ${{ secrets.SUPABASE_SERVICE_KEY }}
           WIZER_HANDOFF_PATH:     handoff/daily.jsonl.gz
+          INGEST_TIME_BUDGET_MINUTES: "160"
           MAX_CONCURRENT_FEEDS:   "10"
           MAX_CONCURRENT_ARTICLES: "5"
         run: python main.py --cadence daily
@@ -39,6 +40,7 @@ jobs:
           SUPABASE_URL:           ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY:   ${{ secrets.SUPABASE_SERVICE_KEY }}
           WIZER_HANDOFF_PATH:     handoff/unknown.jsonl.gz
+          INGEST_TIME_BUDGET_MINUTES: "160"
           MAX_CONCURRENT_FEEDS:   "10"
           MAX_CONCURRENT_ARTICLES: "5"
         run: python main.py --cadence unknown

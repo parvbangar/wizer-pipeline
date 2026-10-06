@@ -125,6 +125,12 @@ Examples:
     parser.add_argument("--shard", type=int, default=0, help="With --handoff: this runner's index.")
     parser.add_argument("--shards", type=int, default=1, help="With --handoff: number of runners.")
     parser.add_argument(
+        "--sweep",
+        action="store_true",
+        help="Sweeper: claim articles still unenriched --min-age-hours after ingestion and "
+             "crawl + enrich them in parallel (enrichment/handoff_runner.run_sweeper).",
+    )
+    parser.add_argument(
         "--min-age-hours",
         type=float,
         default=None,
@@ -171,6 +177,18 @@ Examples:
         return
 
     min_age = args.min_age_hours if args.min_age_hours is not None         else float(os.getenv("ENRICH_SWEEP_MIN_AGE_HOURS", "0"))
+
+    if args.sweep:
+        from enrichment.handoff_runner import run_sweeper
+        try:
+            summary = run_sweeper(batch_size, min_age, time_budget_minutes=time_budget)
+        except Exception as e:
+            log.exception("Sweeper crashed: %s", e)
+            sys.exit(1)
+        print(f"
+  Sweeper: { {k: v for k, v in summary.items() if not k.endswith('_ids') and k != 'crashed'} }
+")
+        return
     try:
         summary = run_enrichment(
             batch_size=batch_size,

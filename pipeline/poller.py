@@ -80,9 +80,10 @@ from pipeline.config import (
     FEED_COL_ID, FEED_COL_URL, FEED_COL_FINAL_URL,
     FEED_COL_CADENCE, FEED_COL_FAIL_COUNT,
     HANDOFF_PATH, STORE_FULL_TEXT, MAX_ARTICLE_BODY_CHARS,
+    CRAWL_AT_INGEST, INGEST_TIME_BUDGET_MINUTES,
 )
 from pipeline.handoff import Handoff
-from pipeline.crawler import CrawledArticle, crawl_article, reset_domain_failures
+from pipeline.crawler import CrawledArticle, crawl_article, discover_article, reset_domain_failures
 from pipeline.dedup import (
     normalise_url, url_hash, legacy_url_hash, simhash, is_near_duplicate,
 )
@@ -324,13 +325,16 @@ async def _process_one_entry(
     title_text = html_module.unescape((entry.get("title") or "").strip())
     title_sh   = simhash(title_text) if title_text else 0
 
-    # ── CRAWL THE ARTICLE ────────────────────────────────────────────────────
-    async with article_sem:   # limit concurrent crawls
-        article = await loop.run_in_executor(
-            None,
-            crawl_article,
-            entry, feed, norm, h, title_sh,
-        )
+    # ── CRAWL THE ARTICLE (or only describe it — the crawl is deferred) ─────
+    if not CRAWL_AT_INGEST:
+        article = discover_article(entry, feed, norm, h, title_sh)
+    else:
+        async with article_sem:   # limit concurrent crawls
+            article = await loop.run_in_executor(
+                None,
+                crawl_article,
+                entry, feed, norm, h, title_sh,
+            )
 
     # ── LAYER 3: NEAR-DUPLICATE DETECTION (SimHash) ──────────────────────────
     # Use the simhash of the title that is actually STORED (the crawler only
@@ -362,6 +366,7 @@ async def poll_one_feed(
     loop:        asyncio.AbstractEventLoop,
     polls:       "db.FeedPollBatch | None" = None,
     handoff:     Handoff | None = None,
+    deadline:    float | None = None,
 ) -> dict:
     """
     Poll a single feed end-to-end.
@@ -386,6 +391,10 @@ async def poll_one_feed(
         return {"new": 0, "duplicates": 0, "errors": 0, "skipped": True}
 
     async with feed_sem:   # limit concurrent feed fetches
+        if deadline is not None and time.perf_counter() >= deadline:
+            # Time budget spent: leave the feed due for the next run (nothing
+            # recorded, so its last_polled_at does not move).
+            return {"new": 0, "duplicates": 0, "errors": 0, "skipped": True, "deferred": True}
         t0 = time.perf_counter()
         log.info("POLLING [%s] %s", cadence, feed_url)
 
@@ -410,6 +419,8 @@ async def poll_one_feed(
             # Complete failure — record it
             if polls is not None:
                 polls.add(feed_id, success=False)
+                if len(polls.items) >= polls.batch_size:
+                    await loop.run_in_executor(None, polls.flush)
             else:
                 await loop.run_in_executor(
                     None, db.update_feed_after_poll,
@@ -530,6 +541,8 @@ async def poll_one_feed(
         if polls is not None:
             polls.add(feed_id, success=True, new_articles=inserted,
                       reactivate=reactivate, dormant=dormant)
+            if len(polls.items) >= polls.batch_size:   # save progress as we go
+                await loop.run_in_executor(None, polls.flush)
 
         return {
             "new":        inserted,
@@ -584,7 +597,8 @@ async def run_pipeline(cadence: str | None = None, dry_run: bool = False) -> dic
     # Feed outcomes are written once at the end (dry runs keep the patched
     # per-feed no-ops); inserted articles + bodies go to the hand-off file.
     polls   = db.FeedPollBatch() if not dry_run else None
-    handoff = Handoff(MAX_ARTICLE_BODY_CHARS) if (HANDOFF_PATH and not dry_run) else None
+    handoff = Handoff(MAX_ARTICLE_BODY_CHARS, path=HANDOFF_PATH) if (HANDOFF_PATH and not dry_run) else None
+    deadline = (run_start + INGEST_TIME_BUDGET_MINUTES * 60) if INGEST_TIME_BUDGET_MINUTES > 0 else None
 
     summary = {
         "cadence":         cadence or "all",
@@ -626,7 +640,7 @@ async def run_pipeline(cadence: str | None = None, dry_run: bool = False) -> dic
         # Launch all feed polls concurrently
         tasks = [
             poll_one_feed(feed, feed_sem, article_sem, seen_simhashes, loop,
-                          polls=polls, handoff=handoff)
+                          polls=polls, handoff=handoff, deadline=deadline)
             for feed in feeds
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -637,6 +651,7 @@ async def run_pipeline(cadence: str | None = None, dry_run: bool = False) -> dic
         total_exact_dups = 0
         total_errors     = 0
         total_skipped    = 0
+        total_deferred   = 0
 
         for r in results:
             if isinstance(r, Exception):
@@ -647,10 +662,15 @@ async def run_pipeline(cadence: str | None = None, dry_run: bool = False) -> dic
                 total_near_dups  += r.get("near_dups", 0)
                 total_exact_dups += r.get("exact_dups", 0)
                 total_errors     += r.get("errors", 0)
-                if r.get("skipped"):
+                if r.get("deferred"):
+                    total_deferred += 1
+                elif r.get("skipped"):
                     total_skipped += 1
 
         duration = round(time.perf_counter() - run_start, 2)
+        if total_deferred:
+            log.warning("Time budget of %.0f min reached: %d feeds left for the next run",
+                        INGEST_TIME_BUDGET_MINUTES, total_deferred)
 
         summary.update({
             "feeds_attempted": len(feeds),
@@ -682,7 +702,7 @@ async def run_pipeline(cadence: str | None = None, dry_run: bool = False) -> dic
             n = await loop.run_in_executor(None, polls.flush)
             log.info("Recorded poll outcomes for %d feeds", n)
         if handoff is not None:
-            summary["handoff_articles"] = handoff.write(HANDOFF_PATH)
+            summary["handoff_articles"] = handoff.write()
         # Always update the DB record — even if the run was killed or crashed
         if not dry_run:
             summary["duration_s"] = round(time.perf_counter() - run_start, 2)

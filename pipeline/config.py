@@ -265,7 +265,16 @@ MAX_ARTICLE_BODY_CHARS = 80_000   # truncate very long articles before storing
 # ─────────────────────────────────────────────────────────────────────────────
 HANDOFF_PATH    = os.getenv("WIZER_HANDOFF_PATH", "").strip()
 STORE_FULL_TEXT = os.getenv("STORE_FULL_TEXT", "" if HANDOFF_PATH else "1").lower() in ("1", "true", "yes")
-FEED_POLL_BATCH = int(os.getenv("FEED_POLL_BATCH", "500"))
+FEED_POLL_BATCH = int(os.getenv("FEED_POLL_BATCH", "200"))
+# CRAWL_AT_INGEST: fetch each article's page during ingestion (the original
+#   design). With a hand-off the crawl is DEFERRED to the processing runners
+#   (pipeline.crawler.crawl_record), so ingestion only discovers: on 2026-10-06
+#   inline crawling let a 58-min breaking_news run poll 456 of 1,365 due feeds.
+# INGEST_TIME_BUDGET_MINUTES: stop starting new feeds after this long (0 = no
+#   limit); feeds not reached stay due for the next run. Set below the job's
+#   timeout so the run always ends cleanly and records what it did.
+CRAWL_AT_INGEST = os.getenv("CRAWL_AT_INGEST", "" if HANDOFF_PATH else "1").lower() in ("1", "true", "yes")
+INGEST_TIME_BUDGET_MINUTES = float(os.getenv("INGEST_TIME_BUDGET_MINUTES", "0"))
 
 # Per-article wall-clock budget across ALL fetch strategies/retries/backoff.
 # Without it, 4 strategies x 3 retries x 15 s timeouts could pin one worker
