@@ -17,3 +17,9 @@
 
 DROP INDEX IF EXISTS article_clusters_v2_centroid_hnsw;
 DROP INDEX IF EXISTS idx_clusters_embedding_hnsw;      -- v1 (pgvector_migration.sql)
+
+-- Indexes production never scanned (pg_stat_user_indexes, 2026-10-06) that
+-- every cluster write still maintained:
+DROP INDEX IF EXISTS article_clusters_last_seen_idx;   -- duplicate of idx_clusters_last_seen_at
+DROP INDEX IF EXISTS idx_clusters_outlet_set;          -- v1 GIN over outlet_set, rewritten on every join
+DROP INDEX IF EXISTS article_clusters_simhash_idx;     -- v1, canonical_simhash is unused
