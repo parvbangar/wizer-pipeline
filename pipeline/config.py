@@ -286,11 +286,9 @@ CRAWL_ARTICLE_DEADLINE_SECONDS = float(os.getenv("CRAWL_ARTICLE_DEADLINE", "60")
 # domain for the rest of the run and store RSS-only text instead.
 CRAWL_DOMAIN_FAIL_THRESHOLD = int(os.getenv("CRAWL_DOMAIN_FAIL_THRESHOLD", "5"))
 
-# Default bot user agent — identifies us honestly
-USER_AGENT = (
-    "Mozilla/5.0 (compatible; NewsIngestBot/1.0; "
-    "+https://github.com/your-org/news-pipeline)"
-)
+# Default user agent — identifies us honestly. No "Bot" token and no URL:
+# PIB / NSE refuse those (403 / no answer, measured 2026-10-06).
+USER_AGENT = "Mozilla/5.0 (compatible; WIZER-NewsReader/2.0)"
 
 # Googlebot user agent — many paywalled news sites whitelist Googlebot
 # so their content gets indexed by Google.  Used as the primary fallback

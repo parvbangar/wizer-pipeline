@@ -6,7 +6,7 @@ Open Graph / JSON-LD / schema.org data.
 
 FETCH STRATEGIES (tried in order until one returns usable HTML)
 ───────────────────────────────────────────────────────────────
-  1. Default UA      — Standard NewsIngestBot request.  Works for ~70% of feeds.
+  1. Default UA      — WIZER-NewsReader request (config.USER_AGENT).  Works for ~70% of feeds.
 
   2. Googlebot UA    — Many paywalled sites (The Hindu, FT, WSJ, Bloomberg…)
                        whitelist Googlebot so their content gets indexed by Google.
@@ -1214,6 +1214,11 @@ def discover_article(
         publisher_name = feed.get("publisher_name", ""),
         paywalled      = is_paywalled(norm_url, bool(feed.get("has_paywall", False))),
     )
+    # A news sitemap declares each article's language (news:language), which
+    # beats the feed-level default — one publisher's sitemap can mix languages.
+    entry_lang = (rss_entry.get("language") or "").strip().lower()
+    if entry_lang and len(entry_lang) <= 10:
+        article.language_code = entry_lang
     article.published_at = _extract_publish_date(rss_entry, {}, {})
     if article.published_at and article.published_at > article.crawled_at:
         article.published_at = article.crawled_at

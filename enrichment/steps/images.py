@@ -87,7 +87,7 @@ def download_and_hash_image(image_url: str) -> int | None:
     try:
         request = urllib.request.Request(
             image_url,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; NewsEnrichBot/1.0)"},
+            headers={"User-Agent": "Mozilla/5.0 (compatible; WIZER-NewsReader/2.0)"},
         )
         with urllib.request.urlopen(request, timeout=IMAGE_DOWNLOAD_TIMEOUT) as resp:
             # Check content type — skip non-images

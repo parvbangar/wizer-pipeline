@@ -83,6 +83,11 @@ from pipeline.config import (
     CRAWL_AT_INGEST, INGEST_TIME_BUDGET_MINUTES,
 )
 from pipeline.handoff import Handoff
+from pipeline.sitemap import (FEED_TYPE_NEWS_SITEMAP, SITEMAP_MAX_BYTES, fetch_news_sitemap,
+                              since_for_feed)
+
+# A news-sitemap index can mean dozens of child downloads.
+_SITEMAP_FETCH_DEADLINE_SECONDS = 180
 from pipeline.crawler import CrawledArticle, crawl_article, discover_article, reset_domain_failures
 from pipeline.dedup import (
     normalise_url, url_hash, legacy_url_hash, simhash, is_near_duplicate,
@@ -95,7 +100,10 @@ log = logging.getLogger(__name__)
 # RSS FEED FETCHING
 # ─────────────────────────────────────────────────────────────────────────────
 
-_FEED_USER_AGENT = "NewsIngestBot/2.0"
+# Measured 2026-10-06: PIB answers 403 and NSE never answers to a User-Agent
+# containing "Bot" or a "+https://" URL ("NewsIngestBot/2.0" was silently
+# failing every PIB / BSE / NSE feed). A plain product token works everywhere.
+_FEED_USER_AGENT = "WIZER-NewsReader/2.0"
 _FETCH_GRACE_SECONDS = 5.0   # extra asyncio-level slack on top of the download deadline
 
 
@@ -245,6 +253,17 @@ def _fetch_rss_blocking(feed_url: str) -> tuple[list[dict], dict, str | None]:
         )
 
     return entries, feed_meta, None
+
+
+def _is_sitemap(feed: dict) -> bool:
+    return (feed.get("feed_type") or "").strip().lower() == FEED_TYPE_NEWS_SITEMAP
+
+
+def _fetch_sitemap_blocking(feed: dict) -> tuple[list[dict], dict, str | None]:
+    """Fetch a news sitemap feed (pipeline/sitemap.py) — same return shape as _fetch_rss_blocking."""
+    url = feed.get(FEED_COL_FINAL_URL) or feed[FEED_COL_URL]
+    return fetch_news_sitemap(url, lambda u: _download_feed(u, max_bytes=SITEMAP_MAX_BYTES),
+                              since=since_for_feed(feed))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -407,10 +426,13 @@ async def poll_one_feed(
         # instead of hanging the run.  (The stuck thread itself can't be killed;
         # it just frees its pool slot whenever the OS gives up.)
         try:
-            entries, feed_meta, err_msg = await asyncio.wait_for(
-                loop.run_in_executor(None, _fetch_rss_blocking, feed_url),
-                timeout=FEED_FETCH_DEADLINE_SECONDS + FEED_FETCH_TIMEOUT_SECONDS + _FETCH_GRACE_SECONDS,
-            )
+            if _is_sitemap(feed):
+                fetch = loop.run_in_executor(None, _fetch_sitemap_blocking, feed)
+                limit = _SITEMAP_FETCH_DEADLINE_SECONDS
+            else:
+                fetch = loop.run_in_executor(None, _fetch_rss_blocking, feed_url)
+                limit = FEED_FETCH_DEADLINE_SECONDS + FEED_FETCH_TIMEOUT_SECONDS + _FETCH_GRACE_SECONDS
+            entries, feed_meta, err_msg = await asyncio.wait_for(fetch, timeout=limit)
         except asyncio.TimeoutError:
             entries, feed_meta = [], {}
             err_msg = "fetch timed out (hard asyncio deadline)"
