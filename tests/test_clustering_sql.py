@@ -1262,3 +1262,27 @@ class TestSaveCrawlColumns:
         assert b["title"] == "Page title" and b["title_simhash"] == 7    # filled because empty
         assert b["published_at"] == datetime(2026, 10, 4, tzinfo=timezone.utc)
         assert not b["is_crawled"] and b["crawl_strategy"] == "failed"
+
+
+class TestEnrichBeforeCluster:
+
+    def test_entities_reach_the_story_in_either_order(self, conn):
+        """Enrichment shards do not wait for clustering; the story still gets the entities."""
+        from enrichment.memory_clustering import ClusterState
+        a1 = add_article(conn)
+        postgrest_call(conn, "wizer_save_enrichment_batch", {"p_items": [
+            {"id": a1, "update": {"category": "politics"},
+             "entities": [{"entity_text": f"E{i}", "entity_type": "PERSON", "salience": 1 - i / 20} for i in range(12)]}]})
+        st = ClusterState(model=MODEL)
+        st.assign(a1, unit(1), T0, "a.com", "t", "en", _mem_params())
+        _apply(conn, st)                                           # clustered AFTER enrichment
+        c = cluster(conn, st.ids[0])
+        assert sorted(e["text"] for e in c["top_entities"]) == sorted(f"E{i}" for i in range(10))   # top 10 only
+        a2 = add_article(conn, domain="b.com")
+        st.assign(a2, at_cos(unit(1), 0.95, 2), T0, "b.com", "t", "en", _mem_params())
+        _apply(conn, st)                                           # not enriched yet: nothing to merge
+        postgrest_call(conn, "wizer_save_enrichment_batch", {"p_items": [
+            {"id": a2, "update": {}, "entities": [{"entity_text": "E0", "entity_type": "PERSON", "salience": 0.9}],
+             "cluster_entities": [{"text": "E0", "type": "PERSON"}], "entity_keys": ["e0"]}]})
+        c = cluster(conn, st.ids[0])
+        assert next(e for e in c["top_entities"] if e["text"] == "E0")["count"] == 2   # enrichment second

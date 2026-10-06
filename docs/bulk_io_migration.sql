@@ -139,6 +139,11 @@ $$;
 --               image_hashes are NOT touched: enrichment adds those later.
 --   p_articles  [{id, cluster_id, action, similarity}] — only articles that
 --               have no cluster yet are stamped (idempotent on retry).
+--               An article that was ENRICHED BEFORE it was clustered (the
+--               enrichment shards do not wait for clustering) brings its top
+--               10 entities into the story's top_entities here; one enriched
+--               after clustering brings them via wizer_save_enrichment_batch.
+--               Either order ends in the same tally.
 --
 -- Returns the DB clock of this transaction: every row written here carries
 -- updated_at = that time, so the next delta sync (updated_at > synced_at)
@@ -157,6 +162,7 @@ AS $$
 DECLARE
   v_clusters integer := 0;
   v_articles integer := 0;
+  v_enriched bigint[];
 BEGIN
   WITH src AS (
     SELECT (c ->> 'id')::uuid                          AS id,
@@ -229,9 +235,32 @@ BEGIN
       FROM r
      WHERE a.id = r.id
        AND a.cluster_id IS NULL
-    RETURNING 1
+    RETURNING a.id, a.enriched_at
   )
-  SELECT count(*) INTO v_articles FROM stamped;
+  SELECT count(*), array_agg(id) FILTER (WHERE enriched_at IS NOT NULL)
+    INTO v_articles, v_enriched
+    FROM stamped;
+
+  IF v_enriched IS NOT NULL THEN
+    WITH ranked AS (
+      SELECT a.cluster_id, e.entity_text, e.entity_type,
+             row_number() OVER (PARTITION BY e.article_id ORDER BY e.salience DESC NULLS LAST) AS rn
+        FROM articles AS a
+        JOIN article_entities AS e ON e.article_id = a.id
+       WHERE a.id = ANY (v_enriched)
+         AND coalesce(e.entity_text, '') <> ''
+    ), per_cluster AS (
+      SELECT cluster_id, jsonb_agg(jsonb_build_object('text', entity_text, 'type', entity_type)) AS ents
+        FROM ranked
+       WHERE rn <= 10
+       GROUP BY cluster_id
+    )
+    UPDATE article_clusters AS c
+       SET top_entities = wizer_merge_top_entities(c.top_entities, pc.ents, 30)
+      FROM per_cluster AS pc
+     WHERE c.id = pc.cluster_id
+       AND c.status = 'active';
+  END IF;
 
   RETURN QUERY SELECT v_clusters, v_articles, now();
 END;

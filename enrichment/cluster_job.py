@@ -111,6 +111,7 @@ def run_memory_clustering(state_path: str | Path | None, bodies: dict | None = N
 
     since = (datetime.now(timezone.utc) - timedelta(hours=since_hours)).isoformat()
     counts = {"seen": 0, "seed": 0, "join": 0, "skipped": 0, "with_body": 0}
+    written: dict[str, int] = {}
     after_ts = after_id = None
     stop = "drained"
     while counts["seen"] < limit:
@@ -141,8 +142,16 @@ def run_memory_clustering(state_path: str | Path | None, bodies: dict | None = N
                 counts["skipped"] += 1
                 continue
             counts[a.action] += 1
+        # Write each page as soon as it is assigned: a job killed by its
+        # timeout keeps everything up to here (the next run's delta sync
+        # re-reads these rows; the rest is still on its work list).
+        page_written = flush(state, model)
+        for k, v in page_written.items():
+            written[k] = written.get(k, 0) + v
 
-    written = flush(state, model)
+    final = flush(state, model)
+    for k, v in final.items():
+        written[k] = written.get(k, 0) + v
     keep_after = (datetime.now(timezone.utc) - timedelta(hours=CLUSTER_STATE_RETAIN_HOURS)).timestamp()
     pruned = state.prune(keep_after)
     if state_path:

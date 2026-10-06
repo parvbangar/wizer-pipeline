@@ -121,10 +121,11 @@ jobs:
           key: cluster-state-${{ github.run_id }}-${{ github.run_attempt }}
 
   enrich:
-    needs: [plan, cluster]
-    # Runs even if clustering failed or was superseded; skipped when there is
-    # nothing to enrich.
-    if: always() && needs.plan.result == 'success' && needs.plan.outputs.shards != '[]'
+    # Does NOT wait for clustering (single writer, often queued behind another
+    # run): the story picks up the article's entities in whichever of the two
+    # writes comes second (docs/bulk_io_migration.sql §3/§4).
+    needs: plan
+    if: needs.plan.outputs.shards != '[]'
     name: "Enrich shard ${{ matrix.shard }}"
     runs-on: ubuntu-latest
     timeout-minutes: 120
