@@ -182,6 +182,8 @@ already have a cluster.
 - **Tag classification** (`classify_tags`) still uses the long-phrase labels. It has not been
   measured, because there is no labelled tag set. The same lexical-overlap risk the category
   labels had probably applies.
+- **Accuracy numbers** for every step live in `docs/ACCURACY.md` (language ID: 95.5 % on 3,030
+  publisher-labelled headlines, all 13 languages).
 - **NER, sentiment and keywords** run only for en/hi (`ENRICH_SUPPORTED_LANGUAGES`). The
   classifier, tags, summary, images and clustering run for all languages.
 - **Clustering granularity** is the event: developments of one long-running story often form

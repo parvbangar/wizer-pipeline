@@ -142,6 +142,10 @@ def enrich_one(
     # to get enriched_at set but no category, sentiment, NER, or keywords.
     lang_base = (language_detected or "en").split("-")[0].lower()
     rich_enrich = not ENRICH_SUPPORTED_LANGUAGES or lang_base in ENRICH_SUPPORTED_LANGUAGES
+    if (language_detected or "").endswith("-latn"):
+        # Romanised Hindi: the en/hi NER, sentiment and keyword models expect
+        # English or Devanagari; classifier, summary and clustering still run.
+        rich_enrich = False
 
     # ── Step 3: Sentiment (English + Hindi only) ──────────────────────────────
     if rich_enrich:
