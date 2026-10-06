@@ -57,6 +57,7 @@ class ArchiveReport:
     articles_archived: int = 0
     rows_pruned: int = 0
     bytes_uploaded: int = 0
+    days_waiting: int = 0          # skipped: articles of the day not enriched yet
     failures: list[str] = field(default_factory=list)
     stop_reason: str = "done"
 
@@ -202,6 +203,13 @@ def run_archive(db, store, bucket: str, hot_days: int = 30, prune: bool = True,
         try:
             row = db.get_log(day)
             if row is None or row["status"] == "uploaded":
+                # Every article is enriched before it leaves Postgres
+                # (docs/archive_guard_migration.sql): wait for the sweeper.
+                waiting = db.day_unenriched(day)
+                if waiting:
+                    report.days_waiting += 1
+                    log.warning("%s: %d articles not enriched yet — not archived this run", day, waiting)
+                    continue
                 t0 = time.monotonic()
                 row = export_day(day, db, store, bucket)
                 report.days_exported += 1

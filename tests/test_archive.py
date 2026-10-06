@@ -95,6 +95,11 @@ class FakeDB:
         self.logs: dict[str, dict] = {}
         self.added_during_export: date | None = None
 
+    unenriched: dict = {}
+
+    def day_unenriched(self, day):
+        return self.unenriched.get(day, 0)
+
     def pending_days(self, hot_days):
         return [(d, (self.logs.get(d.isoformat()) or {}).get("status"))
                 for d in sorted(self.articles)
@@ -217,6 +222,19 @@ class TestRunArchive:
         rep = run_archive(db, store, "bucket")
         assert db.logs[other.isoformat()]["status"] == "pruned"
         assert len(rep.failures) == 1
+
+    def test_day_with_unenriched_articles_waits(self):
+        """Every article is enriched before it leaves Postgres (archive_guard_migration.sql)."""
+        other = date(2026, 4, 11)
+        db, store = FakeDB({DAY: 5, other: 5}), FakeStore()
+        db.unenriched = {DAY: 2}
+        rep = run_archive(db, store, "bucket")
+        assert DAY.isoformat() not in db.logs and len(db.articles[DAY]) == 5     # untouched
+        assert db.logs[other.isoformat()]["status"] == "pruned"                    # others proceed
+        assert rep.days_waiting == 1 and not rep.failures
+        db.unenriched = {}
+        run_archive(db, store, "bucket")                                           # sweeper caught up
+        assert db.logs[DAY.isoformat()]["status"] == "pruned"
 
     def test_empty_day_is_logged_and_closed(self):
         db, store = FakeDB({DAY: 0}), FakeStore()

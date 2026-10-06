@@ -1,6 +1,6 @@
 name: Article archive
 
-# Daily: move articles older than the hot window (ARCHIVE_HOT_DAYS, default 30)
+# Daily: move articles older than the hot window (ARCHIVE_HOT_DAYS, default 14)
 # from Postgres to Parquet in the private Supabase Storage bucket
 # "article-archive" — export, re-download + verify (SHA-256, row counts, ids),
 # and only then delete. The SQL delete function refuses any day that is not
@@ -39,7 +39,7 @@ jobs:
     env:
       SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-      ARCHIVE_HOT_DAYS:     ${{ vars.ARCHIVE_HOT_DAYS || '30' }}
+      ARCHIVE_HOT_DAYS:     ${{ vars.ARCHIVE_HOT_DAYS || '14' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -66,7 +66,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
-          LEFT=$(python -c "from archiver import db; import os; print(len(db.pending_days(int(os.environ.get('ARCHIVE_HOT_DAYS', '30')))))")
+          LEFT=$(python -c "from archiver import db; import os; print(len(db.pending_days(int(os.environ.get('ARCHIVE_HOT_DAYS', '14')))))")
           echo "days still to archive: $LEFT"
           if [ "$LEFT" -le 1 ]; then
             TITLE="Archive backlog complete - resume the pipeline"

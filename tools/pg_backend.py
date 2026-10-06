@@ -214,6 +214,9 @@ class PgArchiveDB:
         return [(_dt.date.fromisoformat(r["day"]), r["status"]) for r in
                 self._rows("SELECT * FROM wizer_archive_days(%s)", (hot_days,))]
 
+    def day_unenriched(self, day):
+        return int(self._rows("SELECT wizer_archive_day_unenriched(%s) AS n", (day,))[0]["n"])
+
     def day_stats(self, day):
         r = self._rows("SELECT * FROM wizer_archive_day_stats(%s)", (day,))[0]
         return {"article_rows": int(r["article_rows"]), "min_id": r["min_id"], "max_id": r["max_id"]}

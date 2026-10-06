@@ -35,7 +35,10 @@ from pathlib import Path
 
 log = logging.getLogger("archive")
 BUCKET = os.getenv("ARCHIVE_BUCKET", "article-archive")
-HOT_DAYS = int(os.getenv("ARCHIVE_HOT_DAYS", "30"))
+# 14 days hot (2026-10-06): ~80K articles/day at ~2.5 KB would outgrow the Micro
+# disk at 30. Older days live as verified Parquet in Storage; bodies are in
+# the article-bodies bucket from day one.
+HOT_DAYS = int(os.getenv("ARCHIVE_HOT_DAYS", "14"))
 
 
 def _store():

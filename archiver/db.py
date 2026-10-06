@@ -44,6 +44,15 @@ def clusters(day: date) -> list[dict]:
     return _rpc("wizer_archive_clusters", {"p_day": day.isoformat()})
 
 
+def day_unenriched(day: date) -> int:
+    """Articles of `day` still waiting for enrichment (dead letters that gave up excluded)."""
+    data = _rpc("wizer_archive_day_unenriched", {"p_day": day.isoformat()})
+    # PostgREST returns a scalar function's value bare (0 becomes [] via _rpc).
+    if isinstance(data, (int, float)):
+        return int(data)
+    return int(data[0]) if data else 0
+
+
 def get_log(day: date) -> dict | None:
     resp = _run_with_retry(lambda: get_client().table(LOG_TABLE).select("*")
                            .eq("day", day.isoformat()).limit(1).execute())

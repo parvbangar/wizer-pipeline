@@ -906,6 +906,10 @@ class TestArchiveSQL:
         hot = add_article(conn)                                     # inside the hot window: must survive
         store = FakeStore()
         rep = runner.run_archive(PgArchiveDB(conn), store, "b", hot_days=30)
+        assert rep.days_waiting == 1 and rep.rows_pruned == 0       # unenriched: the archive waits
+        conn.execute("UPDATE articles SET enriched_at = now()")
+        conn.commit()
+        rep = runner.run_archive(PgArchiveDB(conn), store, "b", hot_days=30)
         assert not rep.failures and rep.rows_pruned == 5
         archived = sorted(i for p, d in store.objects.items() if p.startswith("articles/")
                           for i in parquet_ids(d))
@@ -1286,3 +1290,17 @@ class TestEnrichBeforeCluster:
              "cluster_entities": [{"text": "E0", "type": "PERSON"}], "entity_keys": ["e0"]}]})
         c = cluster(conn, st.ids[0])
         assert next(e for e in c["top_entities"] if e["text"] == "E0")["count"] == 2   # enrichment second
+
+
+class TestArchiveGuard:
+
+    def test_day_unenriched_counts_waiting_articles_only(self, conn):
+        day = T0.date()
+        waiting = add_article(conn, ingested=T0)
+        done = add_article(conn, ingested=T0, enriched=True)
+        gave_up = add_article(conn, ingested=T0)
+        add_article(conn, ingested=T0 + timedelta(days=1))                 # another day
+        conn.execute("UPDATE articles SET enrich_attempts = 10 WHERE id = %s", (gave_up,))
+        conn.commit()
+        n = conn.execute("SELECT wizer_archive_day_unenriched(%s)", (day,)).fetchone()[0]
+        assert n == 1 and waiting and done
