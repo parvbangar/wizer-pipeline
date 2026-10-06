@@ -308,6 +308,46 @@ class ClusterState:
         self.assignments.append(a)
         return a
 
+    # ── twin detection (wizer_find_cluster_merge_candidates, in memory) ──────
+    def merge_candidates(self, probe_ids, threshold: float, params: _Params | None = None) -> list[dict]:
+        """
+        For each probe cluster, its nearest compatible twin — the same rule as
+        SQL wizer_find_cluster_merge_candidates (docs/clustering_v2_migration.sql):
+        time-compatible (gap / span), anchors agree (≥ anchor threshold), nearest
+        by half-precision centroid cosine, scored by exact average-link
+        (Σa · Σb) / (na · nb). Every probe is returned; other_id is None unless
+        that score is ≥ threshold. Rows are shaped for
+        cluster_maintenance.plan_merges.
+        """
+        p = params or _Params()
+        k = self._n
+        rows = []
+        if not k:
+            return rows
+        first, last = self.first[:k], self.last[:k]
+        for pid in probe_ids:
+            i = self._index.get(str(pid))
+            if i is None:
+                continue
+            ok = ((last >= first[i] - p.gap_s) & (first <= last[i] + p.gap_s)
+                  & ((np.maximum(last, last[i]) - np.minimum(first, first[i])) <= p.span_s))
+            ok[i] = False
+            cand = np.flatnonzero(ok)
+            other = sim = None
+            if cand.size:
+                anchors_agree = _cos16(self.anchor16[cand], self.anchor16[i]) >= p.anchor
+                cand = cand[anchors_agree]
+            if cand.size:
+                j = int(cand[np.argmax(_cos16(self.cent16[cand], self.cent16[i]))])
+                s = float(self.sums[i] @ self.sums[j]) / (float(self.counts[i]) * float(self.counts[j]))
+                if s >= threshold:
+                    other, sim = j, s
+            rows.append({"probe_id": self.ids[i], "probe_count": int(self.counts[i]),
+                         "other_id": self.ids[other] if other is not None else None,
+                         "other_count": int(self.counts[other]) if other is not None else None,
+                         "similarity": sim})
+        return rows
+
     # ── flushing ─────────────────────────────────────────────────────────────
     def pending_changes(self) -> tuple[list[dict], list[dict]]:
         """

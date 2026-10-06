@@ -35,6 +35,7 @@ MIGRATION_ORDER: list[str] = [
     "articles_index_cleanup_migration.sql",  # drop duplicate / never-used indexes on articles
     "archive_guard_migration.sql",       # archive waits for a day's articles to be enriched
     "coverage_migration.sql",            # coverage_daily: sitemap / GDELT miss rates per publisher
+    "cluster_hnsw_drop_migration.sql",   # no ANN index on clusters: twins are found in memory
 ]
 
 # Roles that Supabase provides and some migrations GRANT to / create policies

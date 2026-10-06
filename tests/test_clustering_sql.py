@@ -1304,3 +1304,57 @@ class TestArchiveGuard:
         conn.commit()
         n = conn.execute("SELECT wizer_archive_day_unenriched(%s)", (day,)).fetchone()[0]
         assert n == 1 and waiting and done
+
+
+class TestInMemoryTwins:
+    """ClusterState.merge_candidates ≡ wizer_find_cluster_merge_candidates; merge_twins end to end."""
+
+    def _stream_into_sql(self, conn, backend, n=120, seed=31):
+        stream = _story_stream(n, seed=seed)
+        # join 0.99 keeps near-duplicates apart → plenty of twins to find
+        for a in stream:
+            aid = add_article(conn, domain=a["domain"], title=a["title"], published=a["t"])
+            assign(backend, aid, a["v"], published=a["t"], domain=a["domain"], title=a["title"],
+                   lang=a["lang"], join=0.99)
+
+    def test_candidates_match_sql(self, conn, backend):
+        from enrichment.cluster_state_sync import load_full
+        from enrichment.memory_clustering import _Params
+        self._stream_into_sql(conn, backend)
+        sql_rows = backend.find_merge_candidates({
+            "p_model": MODEL, "p_since": (T0 - timedelta(days=3650)).isoformat(),
+            "p_threshold": 0.8, "p_anchor_threshold": 0.75, "p_max_gap_hours": 18,
+            "p_max_span_hours": 120, "p_probe_limit": 10_000,
+        })
+        state = load_full(_fetcher(conn), MODEL, window_since=T0 - timedelta(days=1),
+                          db_now=lambda: conn.execute("SELECT now()").fetchone()[0].isoformat())
+        mem_rows = state.merge_candidates([r["probe_id"] for r in sql_rows], 0.8,
+                                          _Params(join=0.85, anchor=0.75, gap_s=18 * 3600,
+                                                  span_s=120 * 3600, candidates=5))
+        sql = {str(r["probe_id"]): (str(r["other_id"]) if r["other_id"] else None, r["similarity"]) for r in sql_rows}
+        mem = {r["probe_id"]: (r["other_id"], r["similarity"]) for r in mem_rows}
+        assert set(sql) == set(mem) and len(sql) > 20
+        assert sum(1 for v in sql.values() if v[0]) >= 5                         # the test bites
+        for pid, (other, sim) in sql.items():
+            assert mem[pid][0] == other, pid
+            if other:
+                assert mem[pid][1] == pytest.approx(sim, abs=1e-5)
+
+    def test_merge_twins_end_to_end(self, conn, backend, via_postgrest, monkeypatch):
+        from enrichment import cluster_job
+        from enrichment import db as edb
+        from enrichment.cluster_state_sync import load_full
+        self._stream_into_sql(conn, backend, seed=33)
+        monkeypatch.setattr(edb, "merge_clusters", lambda w, l: conn.execute(
+            "SELECT wizer_merge_clusters(%s, %s)", (w, l)).fetchone()[0] or conn.commit() or True)
+        monkeypatch.setattr("enrichment.config.CLUSTER_MERGE_THRESHOLD", 0.8)
+        state = load_full(_fetcher(conn), MODEL, window_since=T0 - timedelta(days=1),
+                          db_now=lambda: conn.execute("SELECT now()").fetchone()[0].isoformat())
+        before = len(state)
+        merged = cluster_job.merge_twins(state, set(state.ids), MODEL)
+        conn.commit()
+        active = conn.execute("SELECT count(*) FROM article_clusters WHERE status = 'active'").fetchone()[0]
+        assert merged > 0 and len(state) == before - merged == active
+        bad = conn.execute("""SELECT count(*) FROM article_clusters c WHERE c.status = 'active'
+            AND c.article_count <> (SELECT count(*) FROM articles a WHERE a.cluster_id = c.id)""").fetchone()[0]
+        assert bad == 0

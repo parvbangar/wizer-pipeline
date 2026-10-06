@@ -94,6 +94,47 @@ def flush(state: ClusterState, model: str = CLUSTER_EMBEDDING_MODEL) -> dict:
     return written
 
 
+MERGE_ROUNDS = 5
+
+
+def merge_twins(state: ClusterState, touched: set[str], model: str = CLUSTER_EMBEDDING_MODEL) -> int:
+    """
+    Fold twin clusters together — the maintenance merge, decided in memory.
+
+    Online assignment can seed two clusters for one story when its first
+    articles arrive worded differently. The candidates come from the state
+    (merge_candidates: the same rule as the SQL sweep, without an ANN index
+    in Postgres); the merge itself stays in SQL (wizer_merge_clusters moves
+    the members and adds the sums under the advisory lock), and a delta sync
+    brings the merged rows back into the state. Probes are the clusters this
+    run touched, then each round's winners.
+    """
+    from enrichment.cluster_maintenance import plan_merges
+    from enrichment.config import CLUSTER_MERGE_THRESHOLD
+    merged = 0
+    probes = set(touched)
+    for _ in range(MERGE_ROUNDS):
+        plan = plan_merges(state.merge_candidates(probes, CLUSTER_MERGE_THRESHOLD), CLUSTER_MERGE_THRESHOLD)
+        if not plan:
+            break
+        winners = set()
+        for winner, loser, sim in plan:
+            try:
+                if db.merge_clusters(winner, loser):
+                    merged += 1
+                    winners.add(winner)
+                    log.debug("merged %s → %s (avg-link %.3f)", loser, winner, sim)
+            except Exception as e:
+                log.warning("merge %s → %s failed: %s", loser, winner, e)
+        if not winners:
+            break
+        apply_delta(db.fetch_cluster_state, state, model)     # merged rows back into memory
+        probes = winners
+    if merged:
+        log.info("Merged %d twin clusters", merged)
+    return merged
+
+
 def run_memory_clustering(state_path: str | Path | None, bodies: dict | None = None,
                           since_hours: float = 72, page: int = 500, limit: int = 200_000,
                           time_budget_minutes: float = 0,
@@ -112,6 +153,7 @@ def run_memory_clustering(state_path: str | Path | None, bodies: dict | None = N
     since = (datetime.now(timezone.utc) - timedelta(hours=since_hours)).isoformat()
     counts = {"seen": 0, "seed": 0, "join": 0, "skipped": 0, "with_body": 0}
     written: dict[str, int] = {}
+    touched: set[str] = set()
     after_ts = after_id = None
     stop = "drained"
     while counts["seen"] < limit:
@@ -142,6 +184,7 @@ def run_memory_clustering(state_path: str | Path | None, bodies: dict | None = N
                 counts["skipped"] += 1
                 continue
             counts[a.action] += 1
+            touched.add(a.cluster_id)
         # Write each page as soon as it is assigned: a job killed by its
         # timeout keeps everything up to here (the next run's delta sync
         # re-reads these rows; the rest is still on its work list).
@@ -152,6 +195,7 @@ def run_memory_clustering(state_path: str | Path | None, bodies: dict | None = N
     final = flush(state, model)
     for k, v in final.items():
         written[k] = written.get(k, 0) + v
+    counts["merges"] = merge_twins(state, touched, model)
     keep_after = (datetime.now(timezone.utc) - timedelta(hours=CLUSTER_STATE_RETAIN_HOURS)).timestamp()
     pruned = state.prune(keep_after)
     if state_path:

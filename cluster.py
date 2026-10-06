@@ -145,7 +145,8 @@ def cmd_maintain(args) -> int:
     from enrichment.cluster_maintenance import run_maintenance
 
     report = run_maintenance(db, lookback_hours=args.lookback_hours,
-                             prune_after_hours=args.prune_after_hours, dry_run=args.dry_run)
+                             prune_after_hours=args.prune_after_hours, dry_run=args.dry_run,
+                             merge=not args.no_merge)
     if args.dry_run:
         for winner, loser, sim in report.planned[:50]:
             print(f"  would merge {loser} → {winner}   avg-link {sim:.3f}")
@@ -229,6 +230,8 @@ def main() -> int:
     m.add_argument("--prune-after-hours", type=int, default=168,
                    help="delete orphaned clusters idle this long (default 168)")
     m.add_argument("--dry-run", action="store_true")
+    m.add_argument("--no-merge", action="store_true",
+                   help="skip the SQL twin sweep (the in-memory clustering job merges twins itself)")
 
     r = sub.add_parser("report", help="print clustering and queue health")
     r.add_argument("--top", type=int, default=20)

@@ -47,7 +47,7 @@ jobs:
         run: |
           DRY=""
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then DRY="--dry-run"; fi
-          python cluster.py maintain --lookback-hours ${{ github.event.inputs.lookback_hours || '6' }} $DRY
+          python cluster.py maintain --no-merge --lookback-hours ${{ github.event.inputs.lookback_hours || '6' }} $DRY
       - name: Health report
         if: always()
         run: python cluster.py report --top 15 --runs 6

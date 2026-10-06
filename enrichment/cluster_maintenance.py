@@ -173,10 +173,15 @@ def run_maintenance(
     lookback_hours: int = 6,
     prune_after_hours: int = 168,
     dry_run: bool = False,
+    merge: bool = True,
 ) -> MaintenanceReport:
-    """Full maintenance pass: merge → reconcile → prune."""
+    """
+    Maintenance pass: merge → reconcile → prune. merge=False skips the SQL twin
+    sweep — the in-memory clustering job finds twins itself
+    (cluster_job.merge_twins), without an ANN index in Postgres.
+    """
     since = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
-    report = merge_duplicates(backend, since, dry_run=dry_run)
+    report = merge_duplicates(backend, since, dry_run=dry_run) if merge else MaintenanceReport(dry_run=dry_run)
     if not dry_run:
         report.reconciled = backend.reconcile_cluster_counts(since.isoformat())
         if report.reconciled:
