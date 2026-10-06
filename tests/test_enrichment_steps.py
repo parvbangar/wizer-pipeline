@@ -276,8 +276,13 @@ class TestLanguage:
                 return types.SimpleNamespace(iso_code_639_1=types.SimpleNamespace(name="HI"))
 
         monkeypatch.setattr(language, "_get_detector", lambda: Det())
+        # Latin text goes to the statistical detector, body first.
+        assert language.detect_language("The full article body is right here.", "desc text", "title") == "hi"
+        assert seen[0].startswith("The full article body")
+        # Devanagari is decided by script + words, without the statistical detector.
+        seen.clear()
         assert language.detect_language("पूरा लेख यहाँ है, काफी लंबा पाठ", "desc", "title") == "hi"
-        assert seen[0].startswith("पूरा")
+        assert seen == []
 
     def test_short_or_undetectable(self, monkeypatch):
         class Det:
