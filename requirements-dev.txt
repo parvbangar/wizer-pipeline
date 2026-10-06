@@ -11,3 +11,7 @@ numpy>=1.26
 
 # Article archive (archiver/) — Parquet writing in tests/test_archive.py
 pyarrow>=17.0
+
+# Language ID (enrichment/steps/language.py) — tests/test_language.py checks
+# the Latin-script path, which lingua decides. Small Rust wheel, no models.
+lingua-language-detector>=2.0.0
