@@ -27,6 +27,13 @@ on:
       - "Ingest — several_weekly (every 24 hours)"
       - "Ingest — monthly (every 24 hours)"
     types: [completed]
+  # Re-process one ingest run's hand-off by hand (e.g. a run whose processing
+  # was cancelled): Actions → this workflow → Run workflow → the ingest run id.
+  workflow_dispatch:
+    inputs:
+      ingest_run_id:
+        description: "Run id of the ingest workflow whose hand-off to process"
+        required: true
 
 permissions:
   contents: read
@@ -53,7 +60,7 @@ jobs:
         with:
           name: handoff
           path: handoff
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ github.event.workflow_run.id || inputs.ingest_run_id }}
           github-token: ${{ github.token }}
       - name: Size the enrichment fan-out
         id: size
@@ -99,7 +106,7 @@ jobs:
         with:
           name: handoff
           path: handoff
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ github.event.workflow_run.id || inputs.ingest_run_id }}
           github-token: ${{ github.token }}
       - name: Restore cluster state
         uses: actions/cache/restore@v4
@@ -143,7 +150,7 @@ jobs:
         with:
           name: handoff
           path: handoff
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ github.event.workflow_run.id || inputs.ingest_run_id }}
           github-token: ${{ github.token }}
       - uses: actions/checkout@v4
         if: steps.handoff.outcome == 'success'
