@@ -22,7 +22,7 @@ concurrency:
 jobs:
   cluster:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 80   # setup (torch, model) ~10 min + 50-min budget + final flush
     env:
       SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}

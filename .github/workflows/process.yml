@@ -74,7 +74,7 @@ jobs:
 
   cluster:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 80   # setup (torch, model) ~10 min + 50-min budget + final flush
     concurrency:
       group: story-clustering
       cancel-in-progress: false
@@ -128,7 +128,7 @@ jobs:
     if: needs.plan.outputs.shards != '[]'
     name: "Enrich shard ${{ matrix.shard }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 135   # setup ~15 min + 100-min budget + final save; < 150-min claim lease
     strategy:
       fail-fast: false
       matrix:

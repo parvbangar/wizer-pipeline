@@ -34,6 +34,7 @@ MIGRATION_ORDER: list[str] = [
     "bulk_io_migration.sql",             # bulk writes: in-memory clustering result, enrichment, feed polls
     "articles_index_cleanup_migration.sql",  # drop duplicate / never-used indexes on articles
     "archive_guard_migration.sql",       # archive waits for a day's articles to be enriched
+    "coverage_migration.sql",            # coverage_daily: sitemap / GDELT miss rates per publisher
 ]
 
 # Roles that Supabase provides and some migrations GRANT to / create policies

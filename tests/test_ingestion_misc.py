@@ -142,3 +142,36 @@ class TestMigrationSql:
         assert "CREATE INDEX IF NOT EXISTS" in self.FIX
         # no bare ADD COLUMN without IF NOT EXISTS
         assert not re.search(r"ADD COLUMN (?!IF NOT EXISTS)", self.FIX)
+
+
+class TestWorkflowTimingInvariants:
+    """A budget that overruns its job timeout silently discards work (2026-10-06 incidents)."""
+
+    def _jobs(self, name):
+        import yaml
+        return yaml.safe_load((ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8"))["jobs"]
+
+    def test_clustering_budget_plus_setup_fits(self):
+        for wf in ("process.yml", "cluster.yml"):
+            job = self._jobs(wf)["cluster"]
+            run = next(s["run"] for s in job["steps"] if "cluster.py run" in str(s.get("run", "")))
+            budget = float(run.split("--time-budget", 1)[1].split()[0])
+            assert budget + 15 <= job["timeout-minutes"], wf
+
+    def test_enrichment_timeout_inside_claim_lease(self):
+        from enrichment.config import ENRICH_CLAIM_LEASE_MINUTES
+        for wf, job_name in (("process.yml", "enrich"), ("enrichment.yml", "enrich")):
+            job = self._jobs(wf)[job_name]
+            assert job["timeout-minutes"] < ENRICH_CLAIM_LEASE_MINUTES, wf
+            text = (ROOT / ".github" / "workflows" / wf).read_text(encoding="utf-8")
+            budget = 100 if "--time-budget 100" in text else float(job.get("env", {}).get("ENRICH_TIME_BUDGET_MINUTES", 100))
+            assert budget + 15 <= job["timeout-minutes"], wf
+
+    def test_ingest_budget_inside_timeout(self):
+        import yaml
+        for wf in (ROOT / ".github" / "workflows").glob("ingest-*.yml"):
+            data = yaml.safe_load(wf.read_text(encoding="utf-8"))
+            job = data["jobs"]["ingest"]
+            budgets = [float(s["env"]["INGEST_TIME_BUDGET_MINUTES"]) for s in job["steps"]
+                       if "env" in s and "INGEST_TIME_BUDGET_MINUTES" in s["env"]]
+            assert budgets and sum(budgets) + 3 <= job["timeout-minutes"], wf.name

@@ -29,7 +29,7 @@ jobs:
   enrich:
     name: "Sweeper ${{ matrix.runner }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 135   # setup ~15 min + 100-min budget + final save; < 150-min claim lease
     # At most one running + one queued job per runner slot. Seven triggers can
     # fire within the same hour; without this, a backlog of identical jobs
     # would pile up and burn Actions minutes claiming an already-drained queue.
