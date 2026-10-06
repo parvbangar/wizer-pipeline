@@ -171,12 +171,11 @@ Examples:
         except Exception as e:
             log.exception("Hand-off enrichment crashed: %s", e)
             sys.exit(1)
-        print(f"
-  Hand-off shard {args.shard}/{args.shards}: {summary}
-")
+        print(f"\n  Hand-off shard {args.shard}/{args.shards}: {summary}\n")
         return
 
-    min_age = args.min_age_hours if args.min_age_hours is not None         else float(os.getenv("ENRICH_SWEEP_MIN_AGE_HOURS", "0"))
+    min_age = (args.min_age_hours if args.min_age_hours is not None
+               else float(os.getenv("ENRICH_SWEEP_MIN_AGE_HOURS", "0")))
 
     if args.sweep:
         from enrichment.handoff_runner import run_sweeper
@@ -185,9 +184,8 @@ Examples:
         except Exception as e:
             log.exception("Sweeper crashed: %s", e)
             sys.exit(1)
-        print(f"
-  Sweeper: { {k: v for k, v in summary.items() if not k.endswith('_ids') and k != 'crashed'} }
-")
+        shown = {k: v for k, v in summary.items() if not k.endswith("_ids") and k != "crashed"}
+        print(f"\n  Sweeper: {shown}\n")
         return
     try:
         summary = run_enrichment(
