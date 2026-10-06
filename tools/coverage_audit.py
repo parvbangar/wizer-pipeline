@@ -46,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 log = logging.getLogger("coverage_audit")
 
-GDELT_BASE = "http://data.gdeltproject.org/gdeltv2"
+GDELT_BASE = "https://data.gdeltproject.org/gdeltv2"
 INDIC = {"hi", "mr", "bn", "ta", "te", "kn", "ml", "gu", "pa", "ur", "or", "as", "sa", "ne", "kok", "mai", "mni"}
 ALERT_MISS_RATE = 0.02         # a top publisher missing more than 2 % of its sitemap
 ALERT_YIELD_DROP = 0.5         # a domain's stored count halving against its last measurement
@@ -168,7 +168,7 @@ def gdelt_day(day: date, wanted_hosts: set[str], every: int = 2) -> dict[str, se
 
     def one(name: str) -> list[tuple[str, str]]:
         try:
-            r = httpx.get(f"{GDELT_BASE}/{name}", timeout=120)
+            r = httpx.get(f"{GDELT_BASE}/{name}", timeout=120, follow_redirects=True)
             if r.status_code != 200:
                 return []
             with zipfile.ZipFile(io.BytesIO(r.content)) as z:
