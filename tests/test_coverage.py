@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
-from tools.coverage_audit import alerts, gkg_urls, host_key, lincoln_petersen, miss_row
+from tools.coverage_audit import alerts, domain_counts, gkg_urls, host_key, lincoln_petersen, miss_row
 
 DAY = date(2026, 10, 6)
 
@@ -54,3 +54,25 @@ def test_alerts():
     ]
     out = alerts(rows, {"dead.in": 200, "fine.in": 100}, {"big.in", "small.in"})
     assert len(out) == 2 and out[0].startswith("big.in: missed 30 of 500") and out[1].startswith("dead.in")
+
+
+def test_domain_counts_splits_a_window_that_times_out():
+    t0 = datetime(2026, 10, 6, 12, tzinfo=timezone.utc)
+    calls = []
+
+    def rpc(name, p):
+        a, b = datetime.fromisoformat(p["p_from"]), datetime.fromisoformat(p["p_to"])
+        calls.append(b - a)
+        if b - a > timedelta(minutes=20):                   # a burst hour is too big for one call
+            raise Exception({"code": "57014", "message": "canceling statement due to statement timeout"})
+        return [{"domain": "a.com", "n": 1}, {"domain": "b.com", "n": 2}]
+    out = domain_counts(t0, t0 + timedelta(hours=1), rpc)
+    assert out == {"a.com": 4, "b.com": 8}                  # four 15-minute windows, summed
+    assert max(c for c in calls if c <= timedelta(minutes=20)) == timedelta(minutes=15)
+
+
+def test_domain_counts_other_errors_are_raised():
+    def rpc(name, p):
+        raise Exception("permission denied")
+    with pytest.raises(Exception, match="permission"):
+        domain_counts(datetime(2026, 10, 6, tzinfo=timezone.utc), datetime(2026, 10, 6, 1, tzinfo=timezone.utc), rpc)

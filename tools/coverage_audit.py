@@ -158,6 +158,28 @@ def sitemap_reference(feed_url: str, day: date) -> set[str]:
     return {e["link"] for e in entries}
 
 
+def domain_counts(t0: datetime, t1: datetime, rpc=None, min_span=timedelta(minutes=5)) -> dict[str, int]:
+    """
+    Our articles per domain crawled in [t0, t1). A window that hits the statement
+    timeout is split in half and retried: ingestion comes in bursts (65K articles in
+    one hour on 2026-10-06), and Micro reads a few MB/s from a cold disk.
+    """
+    if rpc is None:
+        from pipeline.db import get_client
+        rpc = lambda name, params: get_client().rpc(name, params).execute().data  # noqa: E731
+    try:
+        rows = rpc("wizer_domain_counts_range", {"p_from": t0.isoformat(), "p_to": t1.isoformat()}) or []
+    except Exception as e:
+        if "57014" not in str(e) or t1 - t0 <= min_span:
+            raise
+        mid = t0 + (t1 - t0) / 2
+        out = domain_counts(t0, mid, rpc, min_span)
+        for d, n in domain_counts(mid, t1, rpc, min_span).items():
+            out[d] = out.get(d, 0) + n
+        return out
+    return {r["domain"]: int(r["n"]) for r in rows}
+
+
 def gdelt_day(day: date, wanted_hosts: set[str], every: int = 2) -> dict[str, set[str]]:
     """GDELT English + translingual GKG URLs of Indian hosts for `day` (every n-th 15-min file)."""
     import httpx
@@ -211,10 +233,8 @@ def main() -> int:
     ours_by_host: dict[str, int] = defaultdict(int)
     start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
     for h in range(24):               # an hour per call: a whole day breaks the 30 s API timeout on Micro
-        window = {"p_from": (start + timedelta(hours=h)).isoformat(),
-                  "p_to": (start + timedelta(hours=h + 1)).isoformat()}
-        for r in get_client().rpc("wizer_domain_counts_range", window).execute().data or []:
-            ours_by_host[host_key(r["domain"])] += int(r["n"])
+        for dom, n in domain_counts(start + timedelta(hours=h), start + timedelta(hours=h + 1)).items():
+            ours_by_host[host_key(dom)] += n
 
     rows: list[dict] = []
     # 1. sitemaps
