@@ -171,4 +171,5 @@ class TestRegistry:
         types = {r["feed_type"] for r in rows}
         assert {"pib_daily", "nse_announcements", "bse_announcements", "sebi_listing", "rss"} <= types
         assert all(r["update_cadence"] == "official" and r["country_code"] == "IND" for r in rows)
-        assert len({r["language_code"] for r in rows if r["feed_type"] == "pib_daily"}) >= 14
+        assert {r["language_code"] for r in rows if r["feed_type"] == "pib_daily"} == {"en", "hi"}   # en/hi scope (2026-10-07)
+        assert all(r["language_code"] in ("en", "hi") for r in rows)

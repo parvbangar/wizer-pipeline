@@ -174,4 +174,6 @@ class TestWorkflowTimingInvariants:
             job = data["jobs"]["ingest"]
             budgets = [float(s["env"]["INGEST_TIME_BUDGET_MINUTES"]) for s in job["steps"]
                        if "env" in s and "INGEST_TIME_BUDGET_MINUTES" in s["env"]]
-            assert budgets and sum(budgets) + 3 <= job["timeout-minutes"], wf.name
+            from pipeline.config import HARD_STOP_GRACE_S
+            grace = HARD_STOP_GRACE_S / 60 * len(budgets)
+            assert budgets and sum(budgets) + grace + 1 <= job["timeout-minutes"], wf.name

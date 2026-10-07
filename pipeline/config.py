@@ -276,6 +276,10 @@ FEED_POLL_BATCH = int(os.getenv("FEED_POLL_BATCH", "200"))
 #   timeout so the run always ends cleanly and records what it did.
 CRAWL_AT_INGEST = os.getenv("CRAWL_AT_INGEST", "" if HANDOFF_PATH else "1").lower() in ("1", "true", "yes")
 INGEST_TIME_BUDGET_MINUTES = float(os.getenv("INGEST_TIME_BUDGET_MINUTES", "0"))
+# Seconds after the budget at which feeds still in flight are abandoned, so feed
+# state and the hand-off are always written before the job timeout. Budget +
+# grace + the final flush must stay under timeout-minutes in every ingest-*.yml.
+HARD_STOP_GRACE_S = float(os.getenv("HARD_STOP_GRACE_S", "120"))
 
 # Per-article wall-clock budget across ALL fetch strategies/retries/backoff.
 # Without it, 4 strategies x 3 retries x 15 s timeouts could pin one worker

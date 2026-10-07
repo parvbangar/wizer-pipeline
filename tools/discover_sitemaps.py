@@ -47,6 +47,7 @@ from urllib.parse import urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pipeline.poller import FeedFetchError, _download_feed                     # noqa: E402
+from pipeline.language_scope import LANGUAGES                                 # noqa: E402
 from pipeline.sitemap import (FEED_TYPE_NEWS_SITEMAP, SITEMAP_MAX_BYTES,       # noqa: E402
                               fetch_news_sitemap)
 
@@ -182,6 +183,8 @@ def register(results: list[dict], publisher_names: dict[str, str]) -> int:
                 continue
             seen.add(m["url"])
             lang = next((k for k in m["languages"] if k != "?"), None)
+            if lang is not None and lang not in LANGUAGES:
+                continue                    # English + Hindi only (2026-10-07)
             rows.append({
                 "feed_url": m["url"],
                 "domain": r["domain"],

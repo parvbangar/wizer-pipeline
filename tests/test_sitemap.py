@@ -71,6 +71,19 @@ class TestParsing:
         assert it["title"] == "विपक्षी दलों & CEC" and it["language"] == "hi" and it["news"]
         assert it["image"] == "https://j.example/i.jpg" and it["keywords"] == "CEC, Election"
 
+    def test_title_comes_from_news_block_not_image_title(self):
+        # Mathrubhumi: <image:title> (a file name) precedes <news:title> in each <url>.
+        xml = urlset(
+            "<url><loc>https://m.example/a</loc>"
+            "<image:image><image:loc>https://img.example/x.jpg</image:loc><image:title>Mohanlal.jpg</image:title></image:image>"
+            "<news:news><news:publication><news:name>M</news:name><news:language>ml</news:language></news:publication>"
+            "<news:publication_date>2026-10-06T08:17:09Z</news:publication_date>"
+            "<news:title>Jailer 2 trailer</news:title></news:news></url>")
+        _, items = parse_sitemap(xml)
+        assert items[0]["title"] == "Jailer 2 trailer"
+        assert items[0]["language"] == "ml"
+        assert items[0]["image"] == "https://img.example/x.jpg"
+
     def test_index(self):
         kind, items = parse_sitemap(index(("https://b.example/s1.xml", "2026-10-06T05:00:00Z")))
         assert kind == "index" and items[0]["loc"] == "https://b.example/s1.xml"
@@ -150,7 +163,9 @@ class TestPollerIntegration:
 
     def test_sitemap_feed_goes_through_the_same_pipeline(self, monkeypatch, tmp_path):
         page = urlset(news_url("https://p.example/a", (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
-                               title="Sitemap headline", lang="mr"))
+                               title="Sitemap headline", lang="hi"),
+                      news_url("https://p.example/b", (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+                               title="Marathi-declared headline", lang="mr"))
         monkeypatch.setattr(poller, "_download_feed", lambda url, **kw: (page.encode(), {}, url))
         monkeypatch.setattr(poller, "_fetch_rss_blocking", lambda url: pytest.fail("RSS path used for a sitemap"))
         monkeypatch.setattr(poller, "CRAWL_AT_INGEST", False)
@@ -169,7 +184,8 @@ class TestPollerIntegration:
                                               polls=polls)
         res = asyncio.run(go())
         assert res["new"] == 1 and sent[0]["title"] == "Sitemap headline"
-        assert sent[0]["language_code"] == "mr"                 # entry language beats the feed default
+        assert sent[0]["language_code"] == "hi"                 # entry language beats the feed default
+        assert len(sent) == 1                                   # the "mr" entry is outside the en/hi scope
         assert polls.items[0]["success"] and polls.items[0]["new_articles"] == 1
 
     def test_discover_uses_entry_language(self):

@@ -22,3 +22,6 @@ tools/cluster_eval/data/
 # cron-job.org setup screenshots (tools/cronjob_setup.py)
 tools/cronjob_shots/
 tools/cluster_eval/data/e5-base-onnx/
+
+# Embedding caches of the gold / training samples (rebuilt by tools/gold/embed.py)
+tools/gold/*.npz

@@ -68,6 +68,7 @@ import time
 from enrichment import db
 from enrichment.clustering import assign_cluster
 from enrichment.config import (
+    CATEGORY_HEAD,
     CLUSTERING_ENABLED,
     ENRICH_BATCH_SIZE,
     ENRICH_MAX_ATTEMPTS,
@@ -83,7 +84,8 @@ from enrichment.steps.keywords    import extract_keywords
 from enrichment.steps.classifier  import classify_article, classify_tags
 from enrichment.steps.summarizer  import summarize_article
 from enrichment.steps.images      import download_and_hash_image
-from enrichment.steps.embedding   import build_embedding_text, embed_texts
+from enrichment.steps.embedding   import build_embedding_text, embed_texts, CLUSTER_EMBEDDING_MODEL
+from enrichment.steps             import category_head
 
 log = logging.getLogger(__name__)
 
@@ -91,6 +93,19 @@ log = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 # SINGLE ARTICLE ENRICHMENT
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _category(article: dict, title: str, description: str, full_text: str) -> str:
+    """Category from the E5 head when possible, else the mDeBERTa zero-shot classifier."""
+    if CATEGORY_HEAD and category_head.available(CLUSTER_EMBEDDING_MODEL):
+        vector = article.get("_category_vector")
+        if vector is None:
+            text = build_embedding_text(title, description, full_text)
+            vector = embed_texts([text])[0] if text else None
+        result = category_head.predict(vector, CLUSTER_EMBEDDING_MODEL)
+        if result is not None:
+            return result[0]
+    return classify_article(title, description, full_text)
+
 
 def enrich_one(
     article: dict,
@@ -188,13 +203,13 @@ def enrich_one(
         except Exception as e:
             log.warning("[%s] keyword extraction failed: %s", article_id, e)
 
-    # ── Step 6: Category classification (all languages — mDeBERTa is multilingual) ──
-    # mDeBERTa handles 100+ languages natively via cross-lingual embeddings.
-    # English labels work for Tamil/Kannada/Telugu/Malayalam input — the model
-    # maps all languages into the same semantic space. No rich_enrich gate needed.
+    # ── Step 6: Category (all languages) ─────────────────────────────────────
+    # The linear head on the multilingual-E5 vector (category_head.py), measured
+    # on the 13-language gold set; mDeBERTa zero-shot is the fallback when the
+    # head is off or its model file is missing. The vector is the clustering
+    # embedding when the caller has one ("_category_vector"), else computed here.
     try:
-        category = classify_article(title, description, full_text)
-        update["category"] = category
+        update["category"] = _category(article, title, description, full_text)
     except Exception as e:
         log.warning("[%s] classifier failed: %s", article_id, e)
 
@@ -432,7 +447,7 @@ def _process_article(article: dict, embedding, dry_run: bool, summary: dict) -> 
     """Enrich, cluster and persist ONE article, updating the run summary."""
     article_id = article.get("id")
     try:
-        article_update, entities = enrich_one(article)
+        article_update, entities = enrich_one({**article, "_category_vector": embedding})
     except Exception as e:
         log.error("[%s] enrich_one crashed: %s", article_id, e)
         summary["failed"] += 1

@@ -1,0 +1,31 @@
+"""tests/test_language_scope.py — ingestion keeps English and Hindi articles only (2026-10-07)."""
+
+from __future__ import annotations
+
+import pytest
+
+from pipeline.language_scope import article_language, in_scope
+
+
+@pytest.mark.parametrize("title, desc, declared, want", [
+    ("RBI keeps repo rate unchanged", "", "en", "en"),
+    ("आरबीआई ने रेपो रेट में कोई बदलाव नहीं किया", "", "en", "hi"),        # Hindi item in an "en" feed
+    ("मुंबईत पावसाचा जोर वाढला, अनेक भागांत पाणी साचले आहे", "", "hi", "mr"),   # Marathi in a "hi" sitemap
+    ("சென்னையில் கனமழை", "", "en", "ta"),
+    ("ఆంధ్రప్రదేశ్ లో భారీ వర్షాలు", "", "te", "te"),
+    ("পশ্চিমবঙ্গে ভারী বৃষ্টি", "", "bn", "bn"),
+    ("پاکستان میں بارش", "", "ur", "ur"),
+    ("Российский рубль упал", "", "en", "other"),
+    ("Le gouvernement annonce", "", "fr", "fr"),                          # Latin: trust the declaration
+    ("Modi ne kaha ki desh aage badhega", "", "hi", "hi"),                 # romanised Hindi from a Hindi source
+    ("", "", "hi", "hi"),                                                 # nothing to read: declared
+    ("", "", None, "en"),
+])
+def test_article_language(title, desc, declared, want):
+    assert article_language(title, desc, declared) == want
+
+
+def test_scope_is_english_and_hindi():
+    assert in_scope("en") and in_scope("hi")
+    for lang in ("mr", "ta", "te", "bn", "ur", "gu", "kn", "ml", "or", "pa", "as", "fr", "other"):
+        assert not in_scope(lang)

@@ -80,7 +80,7 @@ from pipeline.config import (
     FEED_COL_ID, FEED_COL_URL, FEED_COL_FINAL_URL,
     FEED_COL_CADENCE, FEED_COL_FAIL_COUNT,
     HANDOFF_PATH, STORE_FULL_TEXT, MAX_ARTICLE_BODY_CHARS,
-    CRAWL_AT_INGEST, INGEST_TIME_BUDGET_MINUTES,
+    CRAWL_AT_INGEST, INGEST_TIME_BUDGET_MINUTES, HARD_STOP_GRACE_S,
 )
 from pipeline.handoff import Handoff
 from pipeline.sitemap import (FEED_TYPE_NEWS_SITEMAP, SITEMAP_MAX_BYTES, fetch_news_sitemap,
@@ -90,6 +90,7 @@ from pipeline import official
 # A news-sitemap index can mean dozens of child downloads.
 _SITEMAP_FETCH_DEADLINE_SECONDS = 180
 from pipeline.crawler import CrawledArticle, crawl_article, discover_article, reset_domain_failures
+from pipeline.language_scope import article_language, in_scope
 from pipeline.dedup import (
     normalise_url, url_hash, legacy_url_hash, simhash, is_near_duplicate,
 )
@@ -284,6 +285,8 @@ def _fetch_sitemap_blocking(feed: dict) -> tuple[list[dict], dict, str | None]:
 # Returned by _process_one_entry for entries with no usable http(s) URL, so they
 # are NOT miscounted as exact duplicates.
 _INVALID_ENTRY = object()
+# Returned for articles outside the language scope (pipeline/language_scope.py).
+_OFF_LANGUAGE = object()
 
 
 def _has_http_scheme(url: str) -> bool:
@@ -365,6 +368,13 @@ async def _process_one_entry(
                 crawl_article,
                 entry, feed, norm, h, title_sh,
             )
+
+    # ── LANGUAGE SCOPE (English + Hindi) ─────────────────────────────────────
+    lang = article_language(article.title, article.description, article.language_code)
+    if not in_scope(lang):
+        return _OFF_LANGUAGE
+    article.language_code = lang
+    article.language = lang[:5]           # articles.language is char(5) and holds the code
 
     # ── LAYER 3: NEAR-DUPLICATE DETECTION (SimHash) ──────────────────────────
     # Use the simhash of the title that is actually STORED (the crawler only
@@ -495,6 +505,7 @@ async def poll_one_feed(
         entry_errors   = 0    # entries whose processing raised
         exact_dups     = 0    # skipped: URL already seen (memory or DB)
         invalid        = 0    # skipped: no usable http(s) link
+        off_language   = 0    # skipped: not English / Hindi
 
         for r in results:
             if isinstance(r, BaseException):
@@ -507,6 +518,8 @@ async def poll_one_feed(
                 )
             elif r is _INVALID_ENTRY:
                 invalid += 1
+            elif r is _OFF_LANGUAGE:
+                off_language += 1
             elif r is None:
                 exact_dups += 1
             else:
@@ -517,6 +530,8 @@ async def poll_one_feed(
 
         if invalid:
             log.debug("  %d entries without a usable link in %s", invalid, feed_url)
+        if off_language:
+            log.debug("  %d entries outside the language scope in %s", off_language, feed_url)
 
         # ── BULK INSERT ───────────────────────────────────────────────────────
         inserted = 0
@@ -675,11 +690,24 @@ async def run_pipeline(cadence: str | None = None, dry_run: bool = False) -> dic
 
         # Launch all feed polls concurrently
         tasks = [
-            poll_one_feed(feed, feed_sem, article_sem, seen_simhashes, loop,
-                          polls=polls, handoff=handoff, deadline=deadline)
+            asyncio.ensure_future(poll_one_feed(feed, feed_sem, article_sem, seen_simhashes, loop,
+                                                polls=polls, handoff=handoff, deadline=deadline))
             for feed in feeds
         ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # The budget stops NEW feeds; a hard stop HARD_STOP_GRACE_S later also
+        # abandons feeds still in flight (a stalled DB call or fetch), so the
+        # finally block always gets to record feed state and the hand-off before
+        # the job timeout kills the process (2026-10-06: hung 37 min, then killed).
+        hard_stop = (deadline - time.perf_counter() + HARD_STOP_GRACE_S) if deadline is not None else None
+        done, pending = await asyncio.wait(tasks, timeout=max(hard_stop, 1.0) if hard_stop is not None else None)
+        if pending:
+            log.error("Hard stop: abandoning %d feeds still in flight %.0f s after the time budget",
+                      len(pending), HARD_STOP_GRACE_S)
+            for t in pending:
+                t.cancel()
+        results = [t.exception() if t.exception() is not None else t.result()
+                   for t in tasks if t in done and not t.cancelled()]
+        summary["feeds_abandoned"] = len(pending)
 
         # Aggregate stats
         total_new        = 0

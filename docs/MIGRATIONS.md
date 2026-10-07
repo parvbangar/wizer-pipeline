@@ -131,6 +131,37 @@ lost; the queue simply waits.
 SELECT * FROM enrichment_queue_health;   -- unenriched_over_24h must stay 0; given_up ~0
 ```
 
+## English + Hindi only (2026-10-07)
+
+The user narrowed the pipeline to English and Hindi. This was a data operation; there is no
+schema change.
+
+1. **Feeds.** Feeds whose `language_code` is not en/hi were deactivated: 507 on 2026-10-07.
+   ```sql
+   update feeds set is_active = false, disabled_reason = 'language_scope_en_hi'
+    where is_active and language_code is not null and lower(trim(language_code)) not in ('en', 'hi');
+   ```
+   To undo: `update feeds set is_active = true, disabled_reason = null where disabled_reason = 'language_scope_en_hi';`
+2. **Ingest.** `pipeline/language_scope.py` drops out-of-scope articles per article, so mixed
+   feeds and sitemaps are covered too.
+3. **Stored articles.** `tools/purge_languages.py` removes them.
+   - **Rule:** the same as ingest, plus a body-based `language_detected` in another Indian script.
+   - **Clusters:** kept consistent. A partly emptied cluster's `centroid_sum` is scaled by
+     kept/`article_count`, so its average and every average-link score are unchanged. An emptied
+     cluster is deleted.
+   - **Backup:** the deleted rows go to jsonl.gz first.
+   - **Order:**
+     1. Wait until no `story-clustering` job is running.
+     2. Disable `process.yml`, `cluster.yml` and `cluster_maintenance.yml`.
+     3. Run the purge.
+     4. Evict the Actions caches `cluster-state-*`, so the next run reloads the corrected state.
+     5. Re-enable the three workflows.
+   ```bash
+   python tools/purge_languages.py --dsn "$DSN" --dry-run
+   python tools/purge_languages.py --dsn "$DSN" --backup D:/03_Data/wizer_backup_2026-10-07_languages
+   gh cache list -R parvbangar/wizer-pipeline --key cluster-state- --json id -q '.[].id' | xargs -n1 gh cache delete -R parvbangar/wizer-pipeline
+   ```
+
 ## Rollback switches (no redeploy needed)
 
 | problem | switch |

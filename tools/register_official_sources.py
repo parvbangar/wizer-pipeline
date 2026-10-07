@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pipeline import official                                   # noqa: E402
 from pipeline.poller import _fetch_rss_blocking                 # noqa: E402
+from pipeline.language_scope import LANGUAGES  # noqa: E402
 
 PIB = "https://www.pib.gov.in/allRel.aspx?reg={reg}&lang={lang}"
 
@@ -82,7 +83,8 @@ def sources() -> list[dict]:
     for r in rows:
         r.update({"update_cadence": "official", "poll_interval_mins": 15, "country_code": "IND",
                   "is_active": True, "validation_tier": "tier1", "metadata_source": "official_registry"})
-    return rows
+    # English + Hindi only (2026-10-07): regional-language listings are not registered.
+    return [r for r in rows if r["language_code"] in LANGUAGES]
 
 
 def check(row: dict) -> tuple[dict, int, str | None]:

@@ -470,6 +470,23 @@ class TestUpsertCounting:
         assert db.upsert_articles(rows) == (0, 0)
         assert calls["n"] <= 2                              # the batch + its one reconnect retry
 
+    @pytest.mark.parametrize("err", [
+        {"code": "57014", "details": None, "hint": None,
+         "message": "canceling statement due to statement timeout"},     # 2026-10-06 ingest hang
+        {"code": "55P03", "message": "canceling statement due to lock timeout"},
+        {"code": "53300", "message": "sorry, too many clients already"},
+    ])
+    def test_statement_timeout_does_not_retry_row_by_row(self, install, err):
+        calls = {"n": 0}
+
+        def handler(q):
+            calls["n"] += 1
+            raise Exception(err)
+        install(handler)
+        rows = [{"url_hash": i, "url": str(i)} for i in range(20)]
+        assert db.upsert_articles(rows) == (0, 0)
+        assert calls["n"] == 1
+
     def test_batch_path(self, install):
         install(lambda q: FakeResp([{"url_hash": 1}]))
         assert db.upsert_articles([{"url_hash": 1}, {"url_hash": 2}]) == (1, 1)

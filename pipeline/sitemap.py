@@ -61,6 +61,10 @@ _TITLE = _tag("title")
 _LANGUAGE = _tag("language")
 _KEYWORDS = _tag("keywords")
 _IMAGE_LOC = re.compile(r"<image:loc>\s*(?:<!\[CDATA\[)?\s*(.*?)\s*(?:\]\]>)?\s*</image:loc>", re.S | re.I)
+# News fields are read from inside <news:news>: an <image:title> or <video:title>
+# often comes first in the <url> block and is a file name (Mathrubhumi: "Mohanlal.jpg").
+_NEWS_BLOCK = re.compile(r"<news:news\b[^>]*>(.*?)</news:news>", re.S | re.I)
+_MEDIA_BLOCK = re.compile(r"<(image:image|video:video)\b[^>]*>.*?</\1>", re.S | re.I)
 
 
 def parse_date(text: str | None) -> datetime | None:
@@ -106,11 +110,13 @@ def parse_sitemap(xml: str) -> tuple[str, list[dict]]:
         if not m:
             continue
         is_news = "publication_date" in blk.lower()
-        pd = _PUB_DATE.search(blk)
+        nb = _NEWS_BLOCK.search(blk)
+        news = nb.group(1) if nb else _MEDIA_BLOCK.sub("", blk)
+        pd = _PUB_DATE.search(news)
         lm = _LASTMOD.search(blk)
-        title = _TITLE.search(blk) if is_news else None
-        lang = _LANGUAGE.search(blk) if is_news else None
-        kw = _KEYWORDS.search(blk) if is_news else None
+        title = _TITLE.search(news) if is_news else None
+        lang = _LANGUAGE.search(news) if is_news else None
+        kw = _KEYWORDS.search(news) if is_news else None
         img = _IMAGE_LOC.search(blk)
         out.append({
             "loc": _clean(m.group(1)),

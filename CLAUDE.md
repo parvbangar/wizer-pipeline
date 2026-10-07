@@ -13,8 +13,15 @@ An Indian-news pipeline running on GitHub Actions with Supabase (Postgres + pgve
 2. **Layer 2, enrichment** (`enrich.py`, `enrichment/`): claims articles from a work queue,
    runs 9 NLP steps, and puts every article into a **story cluster**.
 
-The corpus is mostly English and Hindi, with Tamil, Telugu, Bengali, Marathi, Gujarati,
-Punjabi and Urdu. Every model choice must work multilingually.
+**Language scope: English and Hindi only** (user decision, 2026-10-07).
+- Ingest keeps an article only if `pipeline/language_scope.py` says en or hi. The check runs per
+  article: Devanagari is split into Hindi vs Marathi, other scripts are dropped, and Latin script
+  needs an en/hi declaration. `WIZER_LANGUAGES` overrides the scope.
+- Feeds in other languages were deactivated with `disabled_reason = 'language_scope_en_hi'`.
+- Stored articles in other languages were removed with `tools/purge_languages.py`; see
+  `docs/MIGRATIONS.md`.
+- The registration tools (`tools/discover_sitemaps.py`, `tools/register_official_sources.py`)
+  register en/hi sources only.
 
 ## Repository layout
 
@@ -98,7 +105,8 @@ For each feed:
   - [< 50 words (briefs, failed crawls): everything below runs on headline + description, except keywords]
   - language
   - [en/hi only: sentiment, NER, keywords]
-  - classifier, tags, summary, image pHash
+  - category (`_category`: linear head on the E5 vector, `steps/category_head.py`; mDeBERTa
+    zero-shot only as a fallback), tags (mDeBERTa), summary, image pHash
 - **Then** `save_entities` → `clustering.assign_cluster` (RPC `wizer_assign_cluster`,
   which also stamps `articles.cluster_id`) → `save_article_enrichment`, which sets
   `enriched_at` **last**.
@@ -184,8 +192,11 @@ already have a cluster.
   labels had probably applies.
 - **Accuracy numbers** for every step live in `docs/ACCURACY.md` (language ID: 95.5 % on 3,030
   publisher-labelled headlines, all 13 languages).
-- **NER, sentiment and keywords** run only for en/hi (`ENRICH_SUPPORTED_LANGUAGES`). The
-  classifier, tags, summary, images and clustering run for all languages.
+- **NER, sentiment and keywords** run only for en/hi (`ENRICH_SUPPORTED_LANGUAGES`), which is
+  now the whole corpus.
+- **Category head:** 76.7 % on the 13-language gold set vs 51.9 % for mDeBERTa
+  (`docs/ACCURACY.md`). Retrain with `tools/gold/train_head.py` whenever the embedding model
+  changes; the head refuses vectors from any other model.
 - **Clustering granularity** is the event: developments of one long-running story often form
   separate clusters (54 % of same-running-story pairs are joined).
 - **`newspaper3k`'s internal re-fetch** is not bounded by the crawler's per-article deadline.

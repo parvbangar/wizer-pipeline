@@ -1,0 +1,1700 @@
+[
+ {
+  "gid": 4880,
+  "category": "business",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 3157,
+  "category": "world",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 4391,
+  "category": "cricket",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 4437,
+  "category": "general",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 5582,
+  "category": "world",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 2442,
+  "category": "general",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 4445,
+  "category": "business",
+  "confidence": 0.65,
+  "cant_tell": false
+ },
+ {
+  "gid": 4827,
+  "category": "business",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 4524,
+  "category": "health",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 4637,
+  "category": "business",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 5207,
+  "category": "general",
+  "confidence": 0.55,
+  "cant_tell": false
+ },
+ {
+  "gid": 4567,
+  "category": "general",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 3008,
+  "category": "business",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 5093,
+  "category": "politics",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 5225,
+  "category": "business",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 2142,
+  "category": "environment",
+  "confidence": 0.65,
+  "cant_tell": false
+ },
+ {
+  "gid": 3561,
+  "category": "politics",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 3672,
+  "category": "education",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 4487,
+  "category": "general",
+  "confidence": 0.7,
+  "cant_tell": false
+ },
+ {
+  "gid": 4171,
+  "category": "business",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 4323,
+  "category": "crime",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 2222,
+  "category": "crime",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 5537,
+  "category": "entertainment",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 3396,
+  "category": "world",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 5162,
+  "category": "politics",
+  "confidence": 0.65,
+  "cant_tell": false
+ },
+ {
+  "gid": 1715,
+  "category": "sports",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 3893,
+  "category": "cricket",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 2221,
+  "category": "politics",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 5100,
+  "category": "environment",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 3579,
+  "category": "technology",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 4358,
+  "category": "general",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 4898,
+  "category": "politics",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 1869,
+  "category": "world",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 2475,
+  "category": "health",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 4651,
+  "category": "cricket",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 3174,
+  "category": "technology",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 4790,
+  "category": "politics",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 2119,
+  "category": "general",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 2928,
+  "category": "politics",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 4110,
+  "category": "general",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 3394,
+  "category": "crime",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 5302,
+  "category": "cricket",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 2280,
+  "category": "crime",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 4549,
+  "category": "general",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 2904,
+  "category": "general",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 2295,
+  "category": "cricket",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 2502,
+  "category": "politics",
+  "confidence": 0.7,
+  "cant_tell": false
+ },
+ {
+  "gid": 3327,
+  "category": "world",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 3695,
+  "category": "general",
+  "confidence": 0.5,
+  "cant_tell": true
+ },
+ {
+  "gid": 2604,
+  "category": "crime",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 2418,
+  "category": "business",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 4555,
+  "category": "politics",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 1925,
+  "category": "crime",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 1497,
+  "category": "world",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 2848,
+  "category": "world",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 1421,
+  "category": "general",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 4081,
+  "category": "general",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 5382,
+  "category": "general",
+  "confidence": 0.7,
+  "cant_tell": false
+ },
+ {
+  "gid": 2067,
+  "category": "health",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 3370,
+  "category": "world",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 4001,
+  "category": "politics",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 3938,
+  "category": "general",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 3361,
+  "category": "politics",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 5634,
+  "category": "politics",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 3994,
+  "category": "general",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 2172,
+  "category": "politics",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 5159,
+  "category": "education",
+  "confidence": 0.55,
+  "cant_tell": false
+ },
+ {
+  "gid": 3814,
+  "category": "general",
+  "confidence": 0.55,
+  "cant_tell": false
+ },
+ {
+  "gid": 3688,
+  "category": "entertainment",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 5175,
+  "category": "sports",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 2499,
+  "category": "general",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 5446,
+  "category": "general",
+  "confidence": 0.55,
+  "cant_tell": false
+ },
+ {
+  "gid": 2014,
+  "category": "general",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 5045,
+  "category": "crime",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 2179,
+  "category": "business",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 4441,
+  "category": "general",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 4867,
+  "category": "general",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 5523,
+  "category": "world",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 4497,
+  "category": "general",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 5069,
+  "category": "world",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 2477,
+  "category": "sports",
+  "confidence": 0.65,
+  "cant_tell": false
+ },
+ {
+  "gid": 3701,
+  "category": "cricket",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 3569,
+  "category": "politics",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 3591,
+  "category": "crime",
+  "confidence": 0.55,
+  "cant_tell": true
+ },
+ {
+  "gid": 3324,
+  "category": "general",
+  "confidence": 0.5,
+  "cant_tell": true
+ },
+ {
+  "gid": 4947,
+  "category": "environment",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 3443,
+  "category": "business",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 3622,
+  "category": "politics",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 3229,
+  "category": "general",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 1627,
+  "category": "general",
+  "confidence": 0.65,
+  "cant_tell": false
+ },
+ {
+  "gid": 5367,
+  "category": "general",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 3284,
+  "category": "crime",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 1706,
+  "category": "world",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 3221,
+  "category": "entertainment",
+  "confidence": 0.55,
+  "cant_tell": false
+ },
+ {
+  "gid": 4042,
+  "category": "politics",
+  "confidence": 0.7,
+  "cant_tell": false
+ },
+ {
+  "gid": 4106,
+  "category": "politics",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 1640,
+  "category": "sports",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 2741,
+  "category": "politics",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 4057,
+  "category": "crime",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 4724,
+  "category": "crime",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 1408,
+  "category": "business",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 4187,
+  "category": "business",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 3689,
+  "category": "general",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 4484,
+  "category": "general",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 1950,
+  "category": "sports",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 5469,
+  "category": "politics",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 1594,
+  "category": "world",
+  "confidence": 0.55,
+  "cant_tell": false
+ },
+ {
+  "gid": 2460,
+  "category": "general",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 2925,
+  "category": "world",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 5142,
+  "category": "cricket",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 3201,
+  "category": "environment",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 2121,
+  "category": "business",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 2090,
+  "category": "entertainment",
+  "confidence": 0.7,
+  "cant_tell": false
+ },
+ {
+  "gid": 4576,
+  "category": "general",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 1716,
+  "category": "health",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 3502,
+  "category": "general",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 3879,
+  "category": "crime",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 3200,
+  "category": "sports",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 2125,
+  "category": "general",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 5501,
+  "category": "politics",
+  "confidence": 0.55,
+  "cant_tell": false
+ },
+ {
+  "gid": 4491,
+  "category": "crime",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 5400,
+  "category": "politics",
+  "confidence": 0.7,
+  "cant_tell": false
+ },
+ {
+  "gid": 4716,
+  "category": "business",
+  "confidence": 0.55,
+  "cant_tell": false
+ },
+ {
+  "gid": 3711,
+  "category": "politics",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 2112,
+  "category": "politics",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 3262,
+  "category": "business",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 1536,
+  "category": "world",
+  "confidence": 0.7,
+  "cant_tell": false
+ },
+ {
+  "gid": 4848,
+  "category": "general",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 1724,
+  "category": "entertainment",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 5436,
+  "category": "sports",
+  "confidence": 0.55,
+  "cant_tell": false
+ },
+ {
+  "gid": 2967,
+  "category": "general",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 2005,
+  "category": "technology",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 5516,
+  "category": "world",
+  "confidence": 0.7,
+  "cant_tell": false
+ },
+ {
+  "gid": 5500,
+  "category": "politics",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 1952,
+  "category": "sports",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 5032,
+  "category": "politics",
+  "confidence": 0.65,
+  "cant_tell": false
+ },
+ {
+  "gid": 5271,
+  "category": "business",
+  "confidence": 0.7,
+  "cant_tell": false
+ },
+ {
+  "gid": 2540,
+  "category": "politics",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 4115,
+  "category": "general",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 5614,
+  "category": "general",
+  "confidence": 0.5,
+  "cant_tell": true
+ },
+ {
+  "gid": 4077,
+  "category": "crime",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 2122,
+  "category": "general",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 4837,
+  "category": "crime",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 4501,
+  "category": "health",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 2811,
+  "category": "business",
+  "confidence": 0.55,
+  "cant_tell": false
+ },
+ {
+  "gid": 3791,
+  "category": "business",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 2701,
+  "category": "general",
+  "confidence": 0.5,
+  "cant_tell": true
+ },
+ {
+  "gid": 2449,
+  "category": "business",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 3500,
+  "category": "entertainment",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 5511,
+  "category": "entertainment",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 3274,
+  "category": "business",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 3351,
+  "category": "crime",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 1463,
+  "category": "general",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 4932,
+  "category": "crime",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 2360,
+  "category": "politics",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 2378,
+  "category": "sports",
+  "confidence": 0.7,
+  "cant_tell": false
+ },
+ {
+  "gid": 2655,
+  "category": "entertainment",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 5266,
+  "category": "business",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 2522,
+  "category": "politics",
+  "confidence": 0.7,
+  "cant_tell": false
+ },
+ {
+  "gid": 3329,
+  "category": "general",
+  "confidence": 0.55,
+  "cant_tell": false
+ },
+ {
+  "gid": 2874,
+  "category": "environment",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 3378,
+  "category": "world",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 4429,
+  "category": "crime",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 4021,
+  "category": "cricket",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 2997,
+  "category": "general",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 2567,
+  "category": "business",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 5055,
+  "category": "general",
+  "confidence": 0.5,
+  "cant_tell": true
+ },
+ {
+  "gid": 4702,
+  "category": "crime",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 4130,
+  "category": "politics",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 2518,
+  "category": "education",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 2913,
+  "category": "politics",
+  "confidence": 0.65,
+  "cant_tell": false
+ },
+ {
+  "gid": 5531,
+  "category": "world",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 5192,
+  "category": "crime",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 5358,
+  "category": "environment",
+  "confidence": 0.7,
+  "cant_tell": false
+ },
+ {
+  "gid": 2582,
+  "category": "business",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 3827,
+  "category": "politics",
+  "confidence": 0.7,
+  "cant_tell": false
+ },
+ {
+  "gid": 2944,
+  "category": "general",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 3837,
+  "category": "crime",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 4676,
+  "category": "business",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 5038,
+  "category": "crime",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 4654,
+  "category": "crime",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 1703,
+  "category": "general",
+  "confidence": 0.55,
+  "cant_tell": false
+ },
+ {
+  "gid": 2493,
+  "category": "world",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 4486,
+  "category": "world",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 2355,
+  "category": "crime",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 1573,
+  "category": "environment",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 1949,
+  "category": "sports",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 5163,
+  "category": "politics",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 2617,
+  "category": "politics",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 1523,
+  "category": "sports",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 3451,
+  "category": "entertainment",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 1741,
+  "category": "world",
+  "confidence": 0.55,
+  "cant_tell": false
+ },
+ {
+  "gid": 5493,
+  "category": "world",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 4904,
+  "category": "politics",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 4419,
+  "category": "general",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 4055,
+  "category": "entertainment",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 3401,
+  "category": "crime",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 5623,
+  "category": "politics",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 3884,
+  "category": "sports",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 5549,
+  "category": "technology",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 4672,
+  "category": "politics",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 4679,
+  "category": "politics",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 1913,
+  "category": "entertainment",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 1605,
+  "category": "world",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 2672,
+  "category": "general",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 4298,
+  "category": "politics",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 4219,
+  "category": "crime",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 3001,
+  "category": "business",
+  "confidence": 0.55,
+  "cant_tell": false
+ },
+ {
+  "gid": 2815,
+  "category": "environment",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 4492,
+  "category": "crime",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 4327,
+  "category": "crime",
+  "confidence": 0.65,
+  "cant_tell": false
+ },
+ {
+  "gid": 2671,
+  "category": "general",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 5274,
+  "category": "business",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 4824,
+  "category": "politics",
+  "confidence": 0.7,
+  "cant_tell": false
+ },
+ {
+  "gid": 4633,
+  "category": "environment",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 4109,
+  "category": "politics",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 4388,
+  "category": "general",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 5381,
+  "category": "environment",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 3589,
+  "category": "health",
+  "confidence": 0.6,
+  "cant_tell": true
+ },
+ {
+  "gid": 2790,
+  "category": "general",
+  "confidence": 0.7,
+  "cant_tell": false
+ },
+ {
+  "gid": 1685,
+  "category": "crime",
+  "confidence": 0.65,
+  "cant_tell": false
+ },
+ {
+  "gid": 4767,
+  "category": "entertainment",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 2844,
+  "category": "technology",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 5310,
+  "category": "cricket",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 4326,
+  "category": "business",
+  "confidence": 0.55,
+  "cant_tell": false
+ },
+ {
+  "gid": 2286,
+  "category": "health",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 2064,
+  "category": "world",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 5328,
+  "category": "politics",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 3347,
+  "category": "education",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 4850,
+  "category": "general",
+  "confidence": 0.5,
+  "cant_tell": true
+ },
+ {
+  "gid": 5134,
+  "category": "politics",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 2956,
+  "category": "environment",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 3384,
+  "category": "world",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 5092,
+  "category": "politics",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 4442,
+  "category": "business",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 5452,
+  "category": "crime",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 1910,
+  "category": "entertainment",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 4038,
+  "category": "politics",
+  "confidence": 0.7,
+  "cant_tell": false
+ },
+ {
+  "gid": 1700,
+  "category": "general",
+  "confidence": 0.7,
+  "cant_tell": false
+ },
+ {
+  "gid": 5619,
+  "category": "health",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 4190,
+  "category": "entertainment",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 1509,
+  "category": "business",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 4721,
+  "category": "crime",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 2781,
+  "category": "general",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 3517,
+  "category": "politics",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 5183,
+  "category": "entertainment",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 3641,
+  "category": "health",
+  "confidence": 0.6,
+  "cant_tell": true
+ },
+ {
+  "gid": 3945,
+  "category": "cricket",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 5248,
+  "category": "general",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 4493,
+  "category": "general",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 4478,
+  "category": "general",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 3156,
+  "category": "world",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 1506,
+  "category": "business",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 2210,
+  "category": "crime",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 4207,
+  "category": "politics",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 4049,
+  "category": "politics",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 3716,
+  "category": "general",
+  "confidence": 0.5,
+  "cant_tell": true
+ },
+ {
+  "gid": 2622,
+  "category": "crime",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 2261,
+  "category": "politics",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 5528,
+  "category": "world",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 2700,
+  "category": "politics",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 1437,
+  "category": "education",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 4083,
+  "category": "politics",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 4830,
+  "category": "politics",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 3724,
+  "category": "technology",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 2573,
+  "category": "crime",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 2769,
+  "category": "politics",
+  "confidence": 0.75,
+  "cant_tell": false
+ },
+ {
+  "gid": 3220,
+  "category": "general",
+  "confidence": 0.8,
+  "cant_tell": false
+ },
+ {
+  "gid": 1864,
+  "category": "sports",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 4196,
+  "category": "politics",
+  "confidence": 0.55,
+  "cant_tell": false
+ },
+ {
+  "gid": 5129,
+  "category": "general",
+  "confidence": 0.65,
+  "cant_tell": false
+ },
+ {
+  "gid": 2509,
+  "category": "entertainment",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 2906,
+  "category": "politics",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 3877,
+  "category": "entertainment",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 5206,
+  "category": "sports",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 5370,
+  "category": "world",
+  "confidence": 0.95,
+  "cant_tell": false
+ },
+ {
+  "gid": 1625,
+  "category": "business",
+  "confidence": 0.6,
+  "cant_tell": false
+ },
+ {
+  "gid": 5008,
+  "category": "crime",
+  "confidence": 0.9,
+  "cant_tell": false
+ },
+ {
+  "gid": 5042,
+  "category": "health",
+  "confidence": 0.7,
+  "cant_tell": false
+ },
+ {
+  "gid": 3719,
+  "category": "entertainment",
+  "confidence": 0.5,
+  "cant_tell": true
+ },
+ {
+  "gid": 3146,
+  "category": "world",
+  "confidence": 0.7,
+  "cant_tell": false
+ },
+ {
+  "gid": 3193,
+  "category": "entertainment",
+  "confidence": 0.85,
+  "cant_tell": false
+ },
+ {
+  "gid": 5250,
+  "category": "politics",
+  "confidence": 0.95,
+  "cant_tell": false
+ }
+]

@@ -112,6 +112,25 @@ def _is_transient(e: Exception) -> bool:
                                   "connection refused", "broken pipe"))
 
 
+# Postgres errors that mean "the database is saturated", not "this row is bad":
+# statement / lock timeouts, too many connections, shutting down.
+_OVERLOAD_CODES = ("57014", "55P03", "53300", "53400", "57P01", "57P03")
+
+
+def _is_overloaded(e: Exception) -> bool:
+    """
+    The database cannot take the work right now. Retrying a failed batch row by
+    row then multiplies the load: on 2026-10-06 statement timeouts (57014) sent
+    every feed into per-row fallbacks and the ingest run hung until its job timeout.
+    """
+    if _is_transient(e):
+        return True
+    code = str(getattr(e, "code", "") or (e.args[0].get("code", "") if e.args and isinstance(e.args[0], dict) else ""))
+    msg = str(e).lower()
+    return code in _OVERLOAD_CODES or any(c in msg for c in _OVERLOAD_CODES) or \
+        "statement timeout" in msg or "canceling statement" in msg or "too many connections" in msg
+
+
 def _retry(operation):
     """Run a DB call; on a transient connection error reconnect and retry once."""
     try:
@@ -726,7 +745,7 @@ def upsert_articles_returning(rows: list[dict]) -> tuple[list[dict], int]:
         duplicates = len(rows) - len(inserted)
 
     except Exception as e:
-        if _is_transient(e):
+        if _is_overloaded(e):
             # The database is overloaded or unreachable: retrying every row on
             # its own multiplies the load on an already-stalled instance (the
             # 2026-10-05 smoke test). Nothing is lost — the rows are not in the

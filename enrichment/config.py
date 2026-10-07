@@ -110,6 +110,10 @@ CLASSIFY_CONFIDENCE_THRESHOLD = float(os.getenv("CLASSIFY_CONFIDENCE_THRESHOLD",
 # Raised 0.25 → 0.35: at 0.25 "conflict" and "crime" fired on sports/general
 # articles (66 observed false-positive co-occurrences in production).
 CLASSIFY_TAG_THRESHOLD        = float(os.getenv("CLASSIFY_TAG_THRESHOLD",        "0.35"))
+# Category from the linear head on the E5 vector (enrichment/steps/category_head.py,
+# trained by tools/gold/train_head.py). Off → mDeBERTa zero-shot for the category too.
+# Accuracy of both on the 13-language gold set: docs/ACCURACY.md.
+CATEGORY_HEAD                 = os.getenv("CATEGORY_HEAD", "true").lower() == "true"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

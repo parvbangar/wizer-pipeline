@@ -264,6 +264,27 @@ class TestExecutorSizing:
         ex = captured["ex"]
         assert isinstance(ex, ThreadPoolExecutor) and ex._max_workers == 17
 
+    def test_hard_stop_abandons_feeds_stuck_in_flight(self, rec, monkeypatch):
+        # 2026-10-06: feeds wedged on DB calls kept a run alive until the job
+        # timeout killed it. Past budget + grace the run must finish anyway.
+        finished = {}
+        monkeypatch.setattr(poller, "log_run_start", lambda *a: "run")
+        monkeypatch.setattr(poller, "log_run_finish", lambda rid, s: finished.update(s))
+        monkeypatch.setattr(poller, "INGEST_TIME_BUDGET_MINUTES", 0.001)   # 0.06 s
+        monkeypatch.setattr(poller, "HARD_STOP_GRACE_S", 0.2)
+        monkeypatch.setattr(db, "get_due_feeds", lambda c=None: [{"id": 1}, {"id": 2}])
+        monkeypatch.setattr(db, "load_recent_simhashes", lambda *a, **k: set())
+
+        async def poll(feed, *a, **k):
+            if feed["id"] == 2:
+                await asyncio.sleep(30)            # wedged
+            return {"new": 3}
+        monkeypatch.setattr(poller, "poll_one_feed", poll)
+        t0 = time.monotonic()
+        asyncio.run(poller.run_pipeline("daily"))
+        assert time.monotonic() - t0 < 5
+        assert finished["feeds_abandoned"] == 1 and finished["new_articles"] == 3
+
     def test_config_default_covers_concurrency(self):
         from pipeline import config
         assert config.EXECUTOR_MAX_WORKERS >= config.MAX_CONCURRENT_FEEDS + config.MAX_CONCURRENT_ARTICLES

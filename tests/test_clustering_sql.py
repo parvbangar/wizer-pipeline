@@ -22,6 +22,7 @@ session into a dedicated database (wizer_test), which is dropped afterwards.
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import threading
@@ -1358,3 +1359,47 @@ class TestInMemoryTwins:
         bad = conn.execute("""SELECT count(*) FROM article_clusters c WHERE c.status = 'active'
             AND c.article_count <> (SELECT count(*) FROM articles a WHERE a.cluster_id = c.id)""").fetchone()[0]
         assert bad == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Language purge (tools/purge_languages.py, 2026-10-07: English + Hindi only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestLanguagePurge:
+
+    def test_purge_keeps_clusters_consistent(self, conn, backend, database, tmp_path):
+        import gzip
+        import sys as _sys
+        from tools import purge_languages
+
+        base = unit(101)
+        en1 = add_article(conn, domain="a.com", title="Election results announced")
+        en2 = add_article(conn, domain="b.com", title="Poll results declared today")
+        ta = add_article(conn, domain="c.com", title="தேர்தல் முடிவுகள் அறிவிப்பு", lang="ta")
+        solo = add_article(conn, domain="d.com", title="சென்னையில் கனமழை", lang="ta")
+        for aid, v, d in ((en1, base, "a.com"), (en2, at_cos(base, 0.97, 5), "b.com"),
+                          (ta, at_cos(base, 0.96, 6), "c.com")):
+            assign(backend, aid, v, domain=d)
+        assign(backend, solo, unit(202), domain="d.com")
+        conn.commit()
+        cid = conn.execute("SELECT cluster_id FROM articles WHERE id = %s", (en1,)).fetchone()[0]
+        solo_cid = conn.execute("SELECT cluster_id FROM articles WHERE id = %s", (solo,)).fetchone()[0]
+        before = cluster(conn, cid)
+        assert before["article_count"] == 3
+
+        _sys.argv = ["purge", "--dsn", database, "--backup", str(tmp_path / "bk")]
+        assert purge_languages.main() == 0
+        conn.rollback()
+
+        left = {r[0] for r in conn.execute("SELECT id FROM articles").fetchall()}
+        assert left == {en1, en2}
+        after = cluster(conn, cid)
+        assert after["article_count"] == 2
+        assert sorted(after["outlet_set"]) == ["a.com", "b.com"] and after["outlet_count"] == 2
+        s0 = np.array(eval(str(before["centroid_sum"])), dtype=np.float64)
+        s1 = np.array(eval(str(after["centroid_sum"])), dtype=np.float64)
+        assert np.allclose(s1, s0 * 2 / 3, atol=1e-4)                       # same average, consistent sum
+        assert after["updated_at"] > before["updated_at"]                    # delta sync picks it up
+        assert cluster(conn, solo_cid) is None                               # emptied cluster removed
+        with gzip.open(tmp_path / "bk" / "articles.jsonl.gz", "rt", encoding="utf-8") as f:
+            assert sorted(json.loads(line)["id"] for line in f) == sorted([ta, solo])

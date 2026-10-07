@@ -65,9 +65,66 @@ See `docs/CLUSTERING.md`:
 
 ## Category — `enrichment/steps/classifier.py`
 
-mDeBERTa zero-shot; 66.2 % on the 160-item en/hi gold set (`tools/classifier_eval`). That set
-is too small to detect changes under ~8–10 points and covers 2 of 13 languages. Building the
-13-language gold set is the next accuracy step (roadmap below).
+**13-language gold set (2026-10-06), `tools/gold/`.**
+- **Sample:** 1,400 production headlines, with descriptions when present: 150 en, 150 hi and 100 for
+  each other language, at most 6 per publisher.
+- **Labels:** two independent LLM labelling passes under `tools/gold/CATEGORY_RUBRIC.md`.
+- **Agreement:** 94.7 % (Cohen's κ 0.941). Per language κ runs from 0.857 (ur) to 0.969 (hi).
+- **Disagreements:** the 74 were settled by a third pass that saw both labels.
+- **Scoring:** 20 items both passes marked `cant_tell` are excluded.
+
+Re-run:
+- `python tools/gold/evaluate.py agreement | build`
+- `python tools/gold/evaluate.py score pred_<model>.json`
+
+| Model | Accuracy (1,380) | hi | en | bn | gu | or | ur | mr | kn | as | ta | pa | te | ml |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| mDeBERTa zero-shot (before 2026-10-07) | 51.9 % | 52 | 54 | 49 | 42 | 51 | 43 | 60 | 51 | 46 | 63 | 59 | 54 | 49 |
+| **E5 linear head (shipped 2026-10-07)** | **76.7 %** | 77 | 77 | 77 | 74 | 81 | 83 | 81 | 83 | 77 | 72 | 71 | 72 | 73 |
+
+**The E5 head** (`enrichment/steps/category_head.py`, model `enrichment/models/category_head.npz`):
+- **Model:** a 13-way logistic regression on the multilingual-E5 vector the pipeline already
+  computes for clustering.
+- **Training data:** fitted on 4,101 LLM-teacher labels (`tools/gold/train_sample.json` +
+  `labels/T*.json`, one pass, same rubric). They are drawn from production with no URL or headline
+  shared with the gold set.
+- **C:** chosen by publisher-held-out cross-validation on the training data (75.8 % at C = 8). The
+  gold set is never used for fitting or tuning.
+- **Cost:** one 13×768 matrix product instead of 13 NLI passes.
+
+Re-run: `python tools/gold/embed.py train_sample.json category_sample.json`, then
+`python tools/gold/train_head.py`.
+
+**Since 2026-10-07 the pipeline keeps English and Hindi only**, so en/hi accuracy is what counts.
+Training on all 13 languages beats training on en+hi alone, because the shared multilingual vector
+space transfers. On the 300 en/hi gold items:
+
+| Training data | en/hi accuracy |
+|---|---|
+| all 4,101 labels | **76.6 %** |
+| the 1,382 en/hi labels only | 71.2 % |
+| all labels, en/hi weighted ×3 | 75.3 % |
+
+Its most common errors (gold → predicted):
+- general → world: 22
+- crime → world: 21
+- general → business: 16
+- business → general: 15
+- general → politics: 14
+
+These are mostly the rubric's own borderline cases: foreign crime, and "general" against a specific
+topic.
+
+The shipped zero-shot classifier is far below the 66.2 % measured on the old 160-item en/hi set.
+Its most common errors (gold → predicted):
+- politics → crime: 39
+- general → crime: 36
+- world → politics: 35
+- general → business: 31
+- general → entertainment: 28
+
+A linear head on the E5 vector, cross-validated on the gold set alone with publishers held out,
+reaches 74.3 %. That is the measured case for roadmap item 1.
 
 ## Roadmap (ranked by the 2026-10-06 literature review)
 
