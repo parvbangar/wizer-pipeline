@@ -1216,6 +1216,38 @@ class TestHandoffJobs:
         assert bad == 0
         assert conn.execute("SELECT count(*) FROM articles WHERE cluster_id IS NULL").fetchone()[0] == 0
 
+    def test_failed_twin_merge_still_saves_state(self, conn, via_postgrest, monkeypatch, tmp_path):
+        """2026-10-07: a delta-read timeout inside merge_twins crashed the job and lost its cache."""
+        from enrichment import cluster_job
+        from enrichment import db as edb
+        monkeypatch.setattr(edb, "fetch_unclustered_ingested",
+                            lambda since, limit, after_ts, after_id: postgrest_call(
+                                conn, "wizer_fetch_unclustered_ingested",
+                                {"p_since": since, "p_limit": limit,
+                                 **({"p_after_ts": after_ts.isoformat() if hasattr(after_ts, "isoformat") else after_ts,
+                                     "p_after_id": after_id} if after_ts is not None else {})}))
+        monkeypatch.setattr(cluster_job, "CLUSTER_STATE_RETAIN_HOURS", 10_000)
+        recs = _records(conn, _story_stream(20, seed=4))
+        vec_of = {r["id"]: r["_v"] for r in recs}
+        order = []
+        real_fetch = edb.fetch_unclustered_ingested
+
+        def fetch_and_note(*a):
+            rows = real_fetch(*a)
+            if rows:
+                order.append([r["id"] for r in rows])
+            return rows
+        monkeypatch.setattr(edb, "fetch_unclustered_ingested", fetch_and_note)
+        monkeypatch.setattr(cluster_job, "embed_texts", lambda texts: [vec_of[i] for i in order.pop(0)])
+
+        def boom(*a, **k):
+            raise RuntimeError("canceling statement due to statement timeout")
+        monkeypatch.setattr(cluster_job, "merge_twins", boom)
+        s = cluster_job.run_memory_clustering(tmp_path / "state.npz", None, since_hours=100_000,
+                                              page=50, model=MODEL)
+        assert s["written_articles"] == 20 and s["merges"] == 0
+        assert (tmp_path / "state.npz").exists()
+
     def test_handoff_enrichment_saves_in_bulk(self, conn, backend, via_postgrest, monkeypatch):
         from enrichment import handoff_runner
         recs = _records(conn, _story_stream(5, seed=3))

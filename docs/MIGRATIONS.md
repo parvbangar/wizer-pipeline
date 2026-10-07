@@ -25,6 +25,10 @@ see the rollout section below for exactly which files to run there. The canonica
 | 13 | `enrichment_queue_v2_migration.sql` | queue v2: oldest-first by ingestion time, no age gate, crawl failures claimed, daily dead-letter retries, new `enrichment_queue_health` |
 | 14 | `bulk_io_migration.sql` | bulk I/O: cluster state fetch, `wizer_apply_cluster_changes`, `wizer_fetch_unclustered_ingested`, `wizer_save_enrichment_batch`, `wizer_record_feed_polls` |
 | 15 | `articles_index_cleanup_migration.sql` | drop 17 duplicate / never-used indexes on `articles` (each insert maintained 26) |
+| 16 | `archive_guard_migration.sql` | `wizer_archive_day_unenriched` (archive refuses days with unenriched articles) |
+| 17 | `coverage_migration.sql` | `coverage_daily`, `wizer_domain_counts`, `coverage_summary` |
+| 18 | `cluster_hnsw_drop_migration.sql` | no ANN / unused indexes on `article_clusters` (twins are found in memory) |
+| 19 | `cluster_state_delta_migration.sql` | `updated_at` index + one plan per branch for `wizer_cluster_state`. A delta page took >30 s (a full scan) and crashed a clustering run on 2026-10-07; it now takes 1.5–4 s |
 
 Files 6–9 are kept so the history replays cleanly on a fresh database. Their functions are
 not used any more. Two of them previously **could not be re-run**: each redefined

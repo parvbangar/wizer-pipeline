@@ -195,7 +195,15 @@ def run_memory_clustering(state_path: str | Path | None, bodies: dict | None = N
     final = flush(state, model)
     for k, v in final.items():
         written[k] = written.get(k, 0) + v
-    counts["merges"] = merge_twins(state, touched, model)
+    try:
+        counts["merges"] = merge_twins(state, touched, model)
+    except Exception as e:
+        # Everything above is already written. A merge done in SQL but not yet
+        # mirrored here is picked up by the next run's delta (the bookmark has
+        # not moved past it), so the state is still worth saving (2026-10-07:
+        # a delta-read timeout here crashed the job and lost its cache).
+        log.error("Twin merging stopped: %s — the next run's delta sync catches up", e)
+        counts["merges"] = 0
     keep_after = (datetime.now(timezone.utc) - timedelta(hours=CLUSTER_STATE_RETAIN_HOURS)).timestamp()
     pruned = state.prune(keep_after)
     if state_path:
