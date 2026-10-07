@@ -1,0 +1,2020 @@
+[
+{
+"gid": 7797,
+"tags": [
+"government",
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 1759,
+"tags": [
+"sports"
+],
+"cant_tell": false
+},
+{
+"gid": 8305,
+"tags": [
+"government",
+"environment"
+],
+"cant_tell": false
+},
+{
+"gid": 2517,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 7765,
+"tags": [
+"education",
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 5726,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 6913,
+"tags": [
+"technology"
+],
+"cant_tell": false
+},
+{
+"gid": 5887,
+"tags": [
+"economic policy",
+"technology"
+],
+"cant_tell": false
+},
+{
+"gid": 7226,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 5899,
+"tags": [
+"conflict"
+],
+"cant_tell": false
+},
+{
+"gid": 6546,
+"tags": [
+"foreign policy",
+"conflict"
+],
+"cant_tell": false
+},
+{
+"gid": 6865,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 6130,
+"tags": [
+"foreign policy"
+],
+"cant_tell": false
+},
+{
+"gid": 6923,
+"tags": [
+"technology"
+],
+"cant_tell": false
+},
+{
+"gid": 7944,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 8366,
+"tags": [
+"government",
+"environment"
+],
+"cant_tell": false
+},
+{
+"gid": 5687,
+"tags": [
+"foreign policy",
+"conflict"
+],
+"cant_tell": false
+},
+{
+"gid": 7083,
+"tags": [
+"sports"
+],
+"cant_tell": false
+},
+{
+"gid": 8556,
+"tags": [
+"technology"
+],
+"cant_tell": false
+},
+{
+"gid": 8517,
+"tags": [
+"education",
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 1762,
+"tags": [
+"conflict",
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 7629,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 8286,
+"tags": [
+"environment"
+],
+"cant_tell": false
+},
+{
+"gid": 8502,
+"tags": [
+"government",
+"startup"
+],
+"cant_tell": false
+},
+{
+"gid": 7641,
+"tags": [
+"healthcare",
+"public health"
+],
+"cant_tell": false
+},
+{
+"gid": 7334,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 1721,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 2513,
+"tags": [
+"conflict"
+],
+"cant_tell": false
+},
+{
+"gid": 5705,
+"tags": [
+"healthcare"
+],
+"cant_tell": false
+},
+{
+"gid": 1563,
+"tags": [
+"government",
+"technology"
+],
+"cant_tell": false
+},
+{
+"gid": 6094,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 6694,
+"tags": [
+"economic policy"
+],
+"cant_tell": false
+},
+{
+"gid": 2169,
+"tags": [
+"education"
+],
+"cant_tell": false
+},
+{
+"gid": 5838,
+"tags": [
+"artificial intelligence"
+],
+"cant_tell": false
+},
+{
+"gid": 2511,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 1453,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 8337,
+"tags": [
+"education"
+],
+"cant_tell": false
+},
+{
+"gid": 7623,
+"tags": [
+"cricket"
+],
+"cant_tell": false
+},
+{
+"gid": 5840,
+"tags": [
+"healthcare"
+],
+"cant_tell": false
+},
+{
+"gid": 1680,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 7772,
+"tags": [
+"foreign policy",
+"conflict"
+],
+"cant_tell": false
+},
+{
+"gid": 8007,
+"tags": [
+"education"
+],
+"cant_tell": false
+},
+{
+"gid": 2469,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 6268,
+"tags": [
+"cricket"
+],
+"cant_tell": false
+},
+{
+"gid": 7543,
+"tags": [
+"cricket"
+],
+"cant_tell": false
+},
+{
+"gid": 1625,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 1925,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 2770,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 6205,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 7930,
+"tags": [
+"entertainment",
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 7479,
+"tags": [
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 2520,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 2010,
+"tags": [
+"artificial intelligence"
+],
+"cant_tell": false
+},
+{
+"gid": 7771,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 6242,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 7404,
+"tags": [
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 1553,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 6464,
+"tags": [
+"sports"
+],
+"cant_tell": false
+},
+{
+"gid": 2417,
+"tags": [
+"education"
+],
+"cant_tell": false
+},
+{
+"gid": 1543,
+"tags": [
+"foreign policy",
+"economic policy"
+],
+"cant_tell": false
+},
+{
+"gid": 2758,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 7486,
+"tags": [
+"education",
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 7805,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 6470,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 5762,
+"tags": [
+"sports"
+],
+"cant_tell": false
+},
+{
+"gid": 5952,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 2319,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 1459,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 6298,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 6702,
+"tags": [
+"government",
+"education"
+],
+"cant_tell": false
+},
+{
+"gid": 2562,
+"tags": [
+"crime",
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 7896,
+"tags": [
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 1972,
+"tags": [
+"conflict",
+"foreign policy"
+],
+"cant_tell": false
+},
+{
+"gid": 2024,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 7452,
+"tags": [
+"technology"
+],
+"cant_tell": false
+},
+{
+"gid": 7818,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 8544,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 5992,
+"tags": [
+"sports"
+],
+"cant_tell": false
+},
+{
+"gid": 8130,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 2137,
+"tags": [
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 1859,
+"tags": [
+"sports"
+],
+"cant_tell": false
+},
+{
+"gid": 6180,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 2130,
+"tags": [
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 5822,
+"tags": [
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 5796,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 2500,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 2501,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 8140,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 2426,
+"tags": [
+"financial markets"
+],
+"cant_tell": false
+},
+{
+"gid": 2118,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 2482,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 7665,
+"tags": [
+"cricket"
+],
+"cant_tell": false
+},
+{
+"gid": 5882,
+"tags": [
+"education"
+],
+"cant_tell": false
+},
+{
+"gid": 7553,
+"tags": [
+"sports"
+],
+"cant_tell": false
+},
+{
+"gid": 7402,
+"tags": [
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 1439,
+"tags": [
+"economic policy",
+"foreign policy"
+],
+"cant_tell": false
+},
+{
+"gid": 7383,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 5989,
+"tags": [
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 7150,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 6741,
+"tags": [
+"conflict"
+],
+"cant_tell": false
+},
+{
+"gid": 2246,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 8345,
+"tags": [
+"cricket"
+],
+"cant_tell": false
+},
+{
+"gid": 7103,
+"tags": [
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 6450,
+"tags": [
+"technology"
+],
+"cant_tell": false
+},
+{
+"gid": 6950,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 7694,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 8616,
+"tags": [
+"education"
+],
+"cant_tell": false
+},
+{
+"gid": 8352,
+"tags": [
+"foreign policy",
+"conflict"
+],
+"cant_tell": false
+},
+{
+"gid": 7256,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 2042,
+"tags": [
+"economic policy"
+],
+"cant_tell": false
+},
+{
+"gid": 2540,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 1467,
+"tags": [
+"science"
+],
+"cant_tell": false
+},
+{
+"gid": 8085,
+"tags": [
+"cricket"
+],
+"cant_tell": false
+},
+{
+"gid": 5964,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 8033,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 1693,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 7523,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 6359,
+"tags": [
+"conflict"
+],
+"cant_tell": false
+},
+{
+"gid": 6616,
+"tags": [
+"economic policy"
+],
+"cant_tell": false
+},
+{
+"gid": 5656,
+"tags": [
+"cricket"
+],
+"cant_tell": false
+},
+{
+"gid": 2312,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 6745,
+"tags": [
+"conflict"
+],
+"cant_tell": false
+},
+{
+"gid": 1936,
+"tags": [
+"education"
+],
+"cant_tell": false
+},
+{
+"gid": 7545,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 6634,
+"tags": [
+"conflict",
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 8512,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 5934,
+"tags": [
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 7364,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 8116,
+"tags": [
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 7187,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 2306,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 1866,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 1835,
+"tags": [
+"corporate"
+],
+"cant_tell": false
+},
+{
+"gid": 8326,
+"tags": [
+"public health"
+],
+"cant_tell": false
+},
+{
+"gid": 1420,
+"tags": [
+"public health"
+],
+"cant_tell": false
+},
+{
+"gid": 6118,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 7244,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 6186,
+"tags": [
+"financial markets",
+"corporate"
+],
+"cant_tell": false
+},
+{
+"gid": 8194,
+"tags": [
+"crime",
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 6798,
+"tags": [
+"public health"
+],
+"cant_tell": false
+},
+{
+"gid": 7384,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 8086,
+"tags": [
+"government",
+"healthcare"
+],
+"cant_tell": false
+},
+{
+"gid": 6110,
+"tags": [
+"environment",
+"public health"
+],
+"cant_tell": false
+},
+{
+"gid": 2156,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 7929,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 7135,
+"tags": [
+"financial markets"
+],
+"cant_tell": false
+},
+{
+"gid": 5662,
+"tags": [
+"sports"
+],
+"cant_tell": false
+},
+{
+"gid": 6918,
+"tags": [
+"sports"
+],
+"cant_tell": false
+},
+{
+"gid": 6462,
+"tags": [
+"education"
+],
+"cant_tell": false
+},
+{
+"gid": 1554,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 6682,
+"tags": [
+"corporate"
+],
+"cant_tell": false
+},
+{
+"gid": 7594,
+"tags": [
+"government",
+"economic policy"
+],
+"cant_tell": false
+},
+{
+"gid": 6356,
+"tags": [
+"environment",
+"public health"
+],
+"cant_tell": false
+},
+{
+"gid": 5795,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 7007,
+"tags": [
+"environment"
+],
+"cant_tell": false
+},
+{
+"gid": 8246,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 6744,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 2764,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 8492,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 2438,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 1851,
+"tags": [
+"education"
+],
+"cant_tell": false
+},
+{
+"gid": 2676,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 5811,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 1413,
+"tags": [
+"technology"
+],
+"cant_tell": false
+},
+{
+"gid": 7326,
+"tags": [
+"government",
+"healthcare"
+],
+"cant_tell": false
+},
+{
+"gid": 8547,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 6031,
+"tags": [
+"corporate"
+],
+"cant_tell": false
+},
+{
+"gid": 6989,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 6713,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 6717,
+"tags": [
+"education"
+],
+"cant_tell": false
+},
+{
+"gid": 6103,
+"tags": [
+"startup"
+],
+"cant_tell": false
+},
+{
+"gid": 2691,
+"tags": [
+"corporate"
+],
+"cant_tell": false
+},
+{
+"gid": 7000,
+"tags": [
+"sports"
+],
+"cant_tell": false
+},
+{
+"gid": 7354,
+"tags": [
+"environment"
+],
+"cant_tell": false
+},
+{
+"gid": 7093,
+"tags": [
+"education",
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 7620,
+"tags": [
+"conflict"
+],
+"cant_tell": false
+},
+{
+"gid": 7966,
+"tags": [
+"healthcare"
+],
+"cant_tell": false
+},
+{
+"gid": 2622,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 8113,
+"tags": [
+"environment"
+],
+"cant_tell": false
+},
+{
+"gid": 5908,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 6202,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 2410,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 6597,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 2033,
+"tags": [
+"financial markets"
+],
+"cant_tell": false
+},
+{
+"gid": 7030,
+"tags": [
+"sports"
+],
+"cant_tell": false
+},
+{
+"gid": 1493,
+"tags": [
+"sports"
+],
+"cant_tell": false
+},
+{
+"gid": 7849,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 2696,
+"tags": [
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 7275,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 6556,
+"tags": [
+"public health",
+"technology"
+],
+"cant_tell": false
+},
+{
+"gid": 7084,
+"tags": [
+"conflict"
+],
+"cant_tell": false
+},
+{
+"gid": 6269,
+"tags": [
+"conflict"
+],
+"cant_tell": false
+},
+{
+"gid": 1506,
+"tags": [
+"technology"
+],
+"cant_tell": false
+},
+{
+"gid": 2237,
+"tags": [
+"education",
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 2505,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 5732,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 2274,
+"tags": [
+"sports"
+],
+"cant_tell": false
+},
+{
+"gid": 7277,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 7369,
+"tags": [
+"economic policy",
+"financial markets"
+],
+"cant_tell": false
+},
+{
+"gid": 2768,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 8004,
+"tags": [
+"technology",
+"artificial intelligence"
+],
+"cant_tell": false
+},
+{
+"gid": 2665,
+"tags": [
+"conflict"
+],
+"cant_tell": false
+},
+{
+"gid": 2016,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 6039,
+"tags": [
+"environment",
+"science"
+],
+"cant_tell": false
+},
+{
+"gid": 1894,
+"tags": [
+"corporate"
+],
+"cant_tell": false
+},
+{
+"gid": 2066,
+"tags": [
+"conflict"
+],
+"cant_tell": false
+},
+{
+"gid": 2566,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 6959,
+"tags": [
+"technology"
+],
+"cant_tell": false
+},
+{
+"gid": 5871,
+"tags": [
+"artificial intelligence"
+],
+"cant_tell": false
+},
+{
+"gid": 2552,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 7661,
+"tags": [
+"technology"
+],
+"cant_tell": false
+},
+{
+"gid": 7439,
+"tags": [
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 7621,
+"tags": [
+"foreign policy"
+],
+"cant_tell": false
+},
+{
+"gid": 7079,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 2527,
+"tags": [
+"environment"
+],
+"cant_tell": false
+},
+{
+"gid": 6265,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 6856,
+"tags": [
+"artificial intelligence"
+],
+"cant_tell": false
+},
+{
+"gid": 2738,
+"tags": [
+"corporate"
+],
+"cant_tell": false
+},
+{
+"gid": 6908,
+"tags": [
+"science"
+],
+"cant_tell": false
+},
+{
+"gid": 8510,
+"tags": [
+"financial markets"
+],
+"cant_tell": false
+},
+{
+"gid": 8603,
+"tags": [
+"healthcare",
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 1406,
+"tags": [
+"financial markets"
+],
+"cant_tell": false
+},
+{
+"gid": 8587,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 7851,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 2694,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 6645,
+"tags": [
+"technology"
+],
+"cant_tell": false
+},
+{
+"gid": 8295,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 5862,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 7751,
+"tags": [
+"education"
+],
+"cant_tell": false
+},
+{
+"gid": 8572,
+"tags": [
+"technology"
+],
+"cant_tell": false
+},
+{
+"gid": 6494,
+"tags": [
+"sports"
+],
+"cant_tell": false
+},
+{
+"gid": 8426,
+"tags": [
+"conflict"
+],
+"cant_tell": false
+},
+{
+"gid": 1689,
+"tags": [
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 1657,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 1548,
+"tags": [
+"education"
+],
+"cant_tell": false
+},
+{
+"gid": 8488,
+"tags": [
+"foreign policy",
+"conflict"
+],
+"cant_tell": false
+},
+{
+"gid": 2311,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 2251,
+"tags": [
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 7286,
+"tags": [
+"cricket"
+],
+"cant_tell": false
+},
+{
+"gid": 2430,
+"tags": [
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 1557,
+"tags": [
+"financial markets"
+],
+"cant_tell": false
+},
+{
+"gid": 2581,
+"tags": [
+"education"
+],
+"cant_tell": false
+},
+{
+"gid": 6065,
+"tags": [
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 2338,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 6328,
+"tags": [
+"sports"
+],
+"cant_tell": false
+},
+{
+"gid": 1443,
+"tags": [
+"technology"
+],
+"cant_tell": false
+},
+{
+"gid": 1978,
+"tags": [
+"conflict",
+"financial markets"
+],
+"cant_tell": false
+},
+{
+"gid": 6604,
+"tags": [
+"healthcare"
+],
+"cant_tell": false
+},
+{
+"gid": 7347,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 1600,
+"tags": [
+"corporate"
+],
+"cant_tell": false
+},
+{
+"gid": 7315,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 2762,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 8069,
+"tags": [
+"education"
+],
+"cant_tell": false
+},
+{
+"gid": 6558,
+"tags": [
+"environment"
+],
+"cant_tell": false
+},
+{
+"gid": 8061,
+"tags": [
+"science",
+"startup"
+],
+"cant_tell": false
+},
+{
+"gid": 5644,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 2072,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 8451,
+"tags": [
+"corporate"
+],
+"cant_tell": false
+},
+{
+"gid": 6107,
+"tags": [
+"corporate"
+],
+"cant_tell": false
+},
+{
+"gid": 1454,
+"tags": [
+"cricket"
+],
+"cant_tell": false
+},
+{
+"gid": 5669,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 1423,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 6267,
+"tags": [
+"sports"
+],
+"cant_tell": false
+},
+{
+"gid": 6455,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 8365,
+"tags": [
+"cricket"
+],
+"cant_tell": false
+},
+{
+"gid": 6106,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 6379,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 7663,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 7987,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 7784,
+"tags": [
+"healthcare"
+],
+"cant_tell": false
+},
+{
+"gid": 1547,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 1987,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 7874,
+"tags": [
+"cricket"
+],
+"cant_tell": false
+},
+{
+"gid": 6383,
+"tags": [
+"sports"
+],
+"cant_tell": false
+},
+{
+"gid": 8230,
+"tags": [
+"environment"
+],
+"cant_tell": false
+},
+{
+"gid": 7295,
+"tags": [
+"technology",
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 2232,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 2784,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 2159,
+"tags": [
+"environment"
+],
+"cant_tell": false
+},
+{
+"gid": 6301,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 6670,
+"tags": [
+"entertainment"
+],
+"cant_tell": false
+},
+{
+"gid": 2315,
+"tags": [],
+"cant_tell": false
+},
+{
+"gid": 7965,
+"tags": [
+"crime",
+"conflict"
+],
+"cant_tell": false
+},
+{
+"gid": 7210,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 6892,
+"tags": [
+"sports",
+"government"
+],
+"cant_tell": false
+},
+{
+"gid": 5714,
+"tags": [
+"healthcare"
+],
+"cant_tell": false
+},
+{
+"gid": 6937,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 6289,
+"tags": [
+"crime"
+],
+"cant_tell": false
+},
+{
+"gid": 6021,
+"tags": [
+"corporate"
+],
+"cant_tell": false
+},
+{
+"gid": 6282,
+"tags": [
+"foreign policy",
+"conflict"
+],
+"cant_tell": false
+},
+{
+"gid": 7460,
+"tags": [
+"technology"
+],
+"cant_tell": false
+},
+{
+"gid": 8373,
+"tags": [
+"elections"
+],
+"cant_tell": false
+},
+{
+"gid": 8120,
+"tags": [],
+"cant_tell": false
+}
+]

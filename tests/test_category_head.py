@@ -95,3 +95,72 @@ class TestRunnerCategory:
         update, _ = runner.enrich_one({"id": 1, "title": "x", "_category_vector": _axis(1),
                                        "_image_phash": None})
         assert update["category"] == "cricket"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tag head (enrichment/steps/tag_head.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+from enrichment.steps import tag_head  # noqa: E402
+
+TAG_NAMES = ["government", "elections", "cricket", "science"]
+
+
+@pytest.fixture
+def thead(tmp_path, monkeypatch):
+    """Tag i fires when the vector has a large component on axis i; thresholds 0.5, at most 3 tags."""
+    path = tmp_path / "tag_head.npz"
+    W = np.zeros((4, 768), dtype=np.float32)
+    for i in range(4):
+        W[i, i] = 20.0
+    np.savez_compressed(path, W=W, b=np.full(4, -5.0, dtype=np.float32), thresholds=np.full(4, 0.5, dtype=np.float32),
+                        tags=np.array(TAG_NAMES), meta=json.dumps({"embedding_model": MODEL_ID, "max_tags": 3}))
+    monkeypatch.setattr(tag_head, "MODEL_PATH", path)
+    monkeypatch.setattr(tag_head, "_head", None)
+    return path
+
+
+def _mix(*axes):
+    v = np.zeros(768)
+    for a in axes:
+        v[a] = 1.0
+    return (v / np.linalg.norm(v)).tolist()
+
+
+class TestTagHead:
+    def test_tags_above_threshold_best_first(self, thead):
+        assert set(tag_head.predict(_mix(0, 1), MODEL_ID)) == {"government", "elections"}
+        assert tag_head.predict(_mix(2), MODEL_ID) == ["cricket"]
+
+    def test_no_tag_when_nothing_clears_its_threshold(self, thead):
+        assert tag_head.predict(_mix(500), MODEL_ID) == []
+
+    def test_at_most_three(self, thead):
+        assert len(tag_head.predict(_mix(0, 1, 2, 3), MODEL_ID)) == 3
+
+    def test_model_mismatch_and_missing_file(self, thead, tmp_path, monkeypatch):
+        assert tag_head.predict(_mix(0), "other/model") is None
+        monkeypatch.setattr(tag_head, "MODEL_PATH", tmp_path / "absent.npz")
+        monkeypatch.setattr(tag_head, "_head", None)
+        assert tag_head.predict(_mix(0), MODEL_ID) is None
+
+
+class TestRunnerTags:
+    @pytest.fixture(autouse=True)
+    def _env(self, head, thead, monkeypatch):
+        monkeypatch.setattr(runner, "CATEGORY_HEAD", True)
+        monkeypatch.setattr(runner, "TAG_HEAD", True)
+        monkeypatch.setattr(runner, "CLUSTER_EMBEDDING_MODEL", MODEL_ID)
+        monkeypatch.setattr(runner, "classify_tags", lambda *a: ["zero-shot"])
+
+    def test_one_embedding_serves_category_and_tags(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(runner, "embed_texts", lambda t: calls.append(t) or [_mix(0)])
+        art = {}
+        assert runner._category(art, "Poll news", "", "") == "politics"
+        assert runner._tags(art, "Poll news", "", "") == ["government"]
+        assert len(calls) == 1
+
+    def test_falls_back_to_zero_shot_when_off(self, monkeypatch):
+        monkeypatch.setattr(runner, "TAG_HEAD", False)
+        assert runner._tags({"_category_vector": _mix(0)}, "t", "", "") == ["zero-shot"]

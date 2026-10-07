@@ -114,6 +114,9 @@ CLASSIFY_TAG_THRESHOLD        = float(os.getenv("CLASSIFY_TAG_THRESHOLD",       
 # trained by tools/gold/train_head.py). Off → mDeBERTa zero-shot for the category too.
 # Accuracy of both on the 13-language gold set: docs/ACCURACY.md.
 CATEGORY_HEAD                 = os.getenv("CATEGORY_HEAD", "true").lower() == "true"
+# Topic tags from per-tag heads on the same vector (enrichment/steps/tag_head.py,
+# trained by tools/gold/tags.py). Off → mDeBERTa zero-shot tags.
+TAG_HEAD                      = os.getenv("TAG_HEAD", "true").lower() == "true"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

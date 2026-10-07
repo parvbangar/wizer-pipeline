@@ -105,6 +105,7 @@ def fake(monkeypatch):
     monkeypatch.setattr(runner, "extract_keywords", lambda *a: ["k"])
     monkeypatch.setattr(runner, "classify_article", lambda *a: "politics")
     monkeypatch.setattr(runner, "CATEGORY_HEAD", False)   # category from the stub above
+    monkeypatch.setattr(runner, "TAG_HEAD", False)        # tags from the stub below
     monkeypatch.setattr(runner, "classify_tags", lambda *a: ["government"])
     monkeypatch.setattr(runner, "download_and_hash_image", lambda *a: 99)
     monkeypatch.setattr(runner, "embed_texts", lambda texts: [[0.1] * 768 for _ in texts])

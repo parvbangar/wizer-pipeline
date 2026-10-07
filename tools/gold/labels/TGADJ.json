@@ -1,0 +1,150 @@
+[
+ {
+  "gid": 77,
+  "tags": [
+   "entertainment"
+  ],
+  "note": "Story is about a live-music venue; music falls under entertainment"
+ },
+ {
+  "gid": 186,
+  "tags": [],
+  "note": "Interview about a book on China's society; no rubric topic is central"
+ },
+ {
+  "gid": 187,
+  "tags": [
+   "corporate"
+  ],
+  "note": "Promotional business news about one specific company"
+ },
+ {
+  "gid": 291,
+  "tags": [
+   "corporate"
+  ],
+  "note": "Company strategy shift; battery storage is not consumer tech under the rubric"
+ },
+ {
+  "gid": 306,
+  "tags": [],
+  "note": "Publicity street plays about the PM; no policy or election action"
+ },
+ {
+  "gid": 413,
+  "tags": [
+   "foreign policy",
+   "economic policy"
+  ],
+  "note": "Bilateral JTC meeting covering trade facilitation and trade figures"
+ },
+ {
+  "gid": 470,
+  "tags": [
+   "environment"
+  ],
+  "note": "Wildlife week event; students are only the audience, not about schooling"
+ },
+ {
+  "gid": 477,
+  "tags": [
+   "economic policy"
+  ],
+  "note": "Payments/MDR rules and traders' protest; economic policy covers it, government is redundant"
+ },
+ {
+  "gid": 496,
+  "tags": [
+   "crime"
+  ],
+  "note": "Fraud loss and raids; the bank is the victim, not corporate news"
+ },
+ {
+  "gid": 537,
+  "tags": [],
+  "note": "Fundraising to save a heritage workshop; chess is only the audience"
+ },
+ {
+  "gid": 542,
+  "tags": [],
+  "note": "Headline too vague about an airline crew lapse; no clear diplomatic topic"
+ },
+ {
+  "gid": 646,
+  "tags": [],
+  "note": "Consumer fuel price rise; not policy and not a market story"
+ },
+ {
+  "gid": 778,
+  "tags": [
+   "entertainment"
+  ],
+  "note": "Celebrity gossip about Kohli; not about cricket play"
+ },
+ {
+  "gid": 864,
+  "tags": [
+   "monetary policy",
+   "economic policy"
+  ],
+  "note": "Expected RBI repo hike to curb inflation; rubric pairs both"
+ },
+ {
+  "gid": 886,
+  "tags": [],
+  "note": "Local incident of children falling ill and an MLA's visit; local civic news"
+ },
+ {
+  "gid": 1009,
+  "tags": [
+   "science",
+   "environment"
+  ],
+  "note": "Research study whose finding is about methane intensity and nutrient efficiency"
+ },
+ {
+  "gid": 1040,
+  "tags": [],
+  "note": "Human-rights appeal over a missing activist; not interstate diplomacy"
+ },
+ {
+  "gid": 1042,
+  "tags": [
+   "foreign policy",
+   "conflict"
+  ],
+  "note": "Trump's UN threat to Iran amid US-Iran military confrontation"
+ },
+ {
+  "gid": 1054,
+  "tags": [
+   "crime"
+  ],
+  "note": "Illegal mining truck seized; government lapse is secondary"
+ },
+ {
+  "gid": 1094,
+  "tags": [],
+  "note": "Personal-finance how-to on EPF form; no government action"
+ },
+ {
+  "gid": 1248,
+  "tags": [],
+  "note": "Opinion on managerial culture; no specific government action"
+ },
+ {
+  "gid": 1286,
+  "tags": [
+   "science"
+  ],
+  "note": "Nobel prize in medicine is a science prize"
+ },
+ {
+  "gid": 1370,
+  "tags": [
+   "government",
+   "technology"
+  ],
+  "note": "State funding decision on surveillance camera technology"
+ }
+]

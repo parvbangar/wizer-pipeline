@@ -106,7 +106,8 @@ For each feed:
   - language
   - [en/hi only: sentiment, NER, keywords]
   - category (`_category`: linear head on the E5 vector, `steps/category_head.py`; mDeBERTa
-    zero-shot only as a fallback), tags (mDeBERTa), summary, image pHash
+    zero-shot only as a fallback), tags (`_tags`: per-tag heads on the same vector,
+    `steps/tag_head.py`), summary, image pHash
 - **Then** `save_entities` → `clustering.assign_cluster` (RPC `wizer_assign_cluster`,
   which also stamps `articles.cluster_id`) → `save_article_enrichment`, which sets
   `enriched_at` **last**.
@@ -187,9 +188,9 @@ already have a cluster.
 ## Known gaps / not done
 
 - **Propensity / virality scoring** is not implemented (the column exists).
-- **Tag classification** (`classify_tags`) still uses the long-phrase labels. It has not been
-  measured, because there is no labelled tag set. The same lexical-overlap risk the category
-  labels had probably applies.
+- **Tags** come from per-tag heads on the E5 vector (`steps/tag_head.py`): micro-F1 0.735 on
+  the en/hi tag gold set, vs 0.367 for the mDeBERTa zero-shot tagger, which is now only a
+  fallback (`TAG_HEAD=false`). With both heads present, mDeBERTa is never loaded.
 - **Accuracy numbers** for every step live in `docs/ACCURACY.md` (language ID: 95.5 % on 3,030
   publisher-labelled headlines, all 13 languages).
 - **NER, sentiment and keywords** run only for en/hi (`ENRICH_SUPPORTED_LANGUAGES`), which is

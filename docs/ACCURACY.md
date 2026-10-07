@@ -132,12 +132,40 @@ Its most common errors (gold → predicted):
 A linear head on the E5 vector, cross-validated on the gold set alone with publishers held out,
 reaches 74.3 %. That is the measured case for roadmap item 1.
 
+## Topic tags — `enrichment/steps/tag_head.py` (`articles.ai_tag`)
+
+**Gold set (2026-10-07), `tools/gold/tags.py`.**
+- **Sample:** the 300 en/hi items of the category gold set.
+- **Labels:** each item was tagged twice, independently, under `tools/gold/TAG_RUBRIC.md` (the
+  20 existing tags, 0–3 per article).
+- **Agreement:** identical tag sets on 92.3 % of items; pass-vs-pass micro-F1 0.954; per-tag κ
+  0.79–1.00.
+- **Disagreements:** the 23 were settled by a third pass that saw both answers.
+- **Training data:** 4,365 en/hi teacher labels (`labels/TT*.json`), with no overlap with the
+  gold set.
+- **Tuning:** each tag has its own threshold, chosen on out-of-fold, publisher-held-out
+  predictions. C = 8 was chosen by CV micro-F1 (0.770).
+
+Re-run: `python tools/gold/tags.py agreement | build | train`
+
+| Tagger | micro-F1 | precision | recall | macro-F1 | exact tag set |
+|---|---|---|---|---|---|
+| mDeBERTa zero-shot (before 2026-10-07) | 0.367 | 0.274 | 0.558 | 0.354 | 26.7 % |
+| **E5 per-tag heads (shipped)** | **0.735** | **0.699** | **0.775** | **0.675** | **62.3 %** |
+
+The zero-shot tagger was wrong on about three of every four tags it assigned. The heads also
+remove mDeBERTa from enrichment altogether. On 120 real hand-off articles (4 threads), the cost
+per article fell from **1.76 s to 0.31 s**; the tagger alone had been 81 % of it.
+
+Weak tags in the gold set (small support): `financial markets` (4 items), `public health` (2) and
+`science` (7). Their F1 is not yet reliable in either direction.
+
 ## Roadmap (ranked by the 2026-10-06 literature review)
 
 | # | Step | Expected effect |
 |---|---|---|
 | 0 | 13-language gold sets (LLM-labelled, human spot-checked), B-cubed for clustering, CI gates, weekly audit | Makes every step below decidable |
-| 1 | Category / tags / news-tone as linear heads on the e5 vector, trained on LLM-teacher labels | Category 66 % → ~76–84 %, and ~5 s/article of CPU freed |
+| 1 | ~~Category / tags as linear heads on the e5 vector, trained on LLM-teacher labels~~ | **Done 2026-10-07**: category 51.9 → 77.9 %, tags F1 0.367 → 0.735, 1.76 → 0.31 s/article. News-tone head not done |
 | 2 | ~~Script-first language ID~~ | **Done**: 71.1 % → 95.5 % |
 | 3 | Learned cluster scorer (dense + lexical + entity + time features) | +3–8 strict F1 (literature: +5–11) |
 | 4 | IndicNER (11 languages) + Wikidata alias-table entity linking | Indic NER from ~0 to 72–83 F1 |

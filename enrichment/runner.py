@@ -69,6 +69,7 @@ from enrichment import db
 from enrichment.clustering import assign_cluster
 from enrichment.config import (
     CATEGORY_HEAD,
+    TAG_HEAD,
     CLUSTERING_ENABLED,
     ENRICH_BATCH_SIZE,
     ENRICH_MAX_ATTEMPTS,
@@ -85,7 +86,7 @@ from enrichment.steps.classifier  import classify_article, classify_tags
 from enrichment.steps.summarizer  import summarize_article
 from enrichment.steps.images      import download_and_hash_image
 from enrichment.steps.embedding   import build_embedding_text, embed_texts, CLUSTER_EMBEDDING_MODEL
-from enrichment.steps             import category_head
+from enrichment.steps             import category_head, tag_head
 
 log = logging.getLogger(__name__)
 
@@ -94,17 +95,30 @@ log = logging.getLogger(__name__)
 # SINGLE ARTICLE ENRICHMENT
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _vector(article: dict, title: str, description: str, full_text: str):
+    """The article's E5 vector: the caller's ("_category_vector"), else embedded once and kept."""
+    if "_category_vector" not in article or article["_category_vector"] is None:
+        text = build_embedding_text(title, description, full_text)
+        article["_category_vector"] = embed_texts([text])[0] if text else None
+    return article["_category_vector"]
+
+
 def _category(article: dict, title: str, description: str, full_text: str) -> str:
     """Category from the E5 head when possible, else the mDeBERTa zero-shot classifier."""
     if CATEGORY_HEAD and category_head.available(CLUSTER_EMBEDDING_MODEL):
-        vector = article.get("_category_vector")
-        if vector is None:
-            text = build_embedding_text(title, description, full_text)
-            vector = embed_texts([text])[0] if text else None
-        result = category_head.predict(vector, CLUSTER_EMBEDDING_MODEL)
+        result = category_head.predict(_vector(article, title, description, full_text), CLUSTER_EMBEDDING_MODEL)
         if result is not None:
             return result[0]
     return classify_article(title, description, full_text)
+
+
+def _tags(article: dict, title: str, description: str, full_text: str) -> list[str]:
+    """Topic tags from the E5 tag head when possible, else the mDeBERTa zero-shot tagger."""
+    if TAG_HEAD and tag_head.available(CLUSTER_EMBEDDING_MODEL):
+        result = tag_head.predict(_vector(article, title, description, full_text), CLUSTER_EMBEDDING_MODEL)
+        if result is not None:
+            return result
+    return classify_tags(title, description, full_text)
 
 
 def enrich_one(
@@ -213,10 +227,11 @@ def enrich_one(
     except Exception as e:
         log.warning("[%s] classifier failed: %s", article_id, e)
 
-    # ── Step 7: AI topic tags (all languages — same mDeBERTa pipeline) ───────
-    # Reuses the model already loaded by step 6 — no extra RAM.
+    # ── Step 7: AI topic tags ────────────────────────────────────────────────
+    # The per-tag heads on the same E5 vector (tag_head.py); mDeBERTa zero-shot
+    # only as the fallback. With both heads present mDeBERTa is never loaded.
     try:
-        tags = classify_tags(title, description, full_text)
+        tags = _tags(article, title, description, full_text)
         update["ai_tag"] = tags if tags else None
     except Exception as e:
         log.warning("[%s] tag classification failed: %s", article_id, e)
