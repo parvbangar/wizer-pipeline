@@ -80,19 +80,24 @@ Re-run:
 | Model | Accuracy (1,380) | hi | en | bn | gu | or | ur | mr | kn | as | ta | pa | te | ml |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | mDeBERTa zero-shot (before 2026-10-07) | 51.9 % | 52 | 54 | 49 | 42 | 51 | 43 | 60 | 51 | 46 | 63 | 59 | 54 | 49 |
-| **E5 linear head (shipped 2026-10-07)** | **76.7 %** | 77 | 77 | 77 | 74 | 81 | 83 | 81 | 83 | 77 | 72 | 71 | 72 | 73 |
+| E5 linear head, 4,101 labels | 76.7 % | 77 | 77 | 77 | 74 | 81 | 83 | 81 | 83 | 77 | 72 | 71 | 72 | 73 |
+| **E5 linear head, 7,056 labels (shipped 2026-10-07)** | **77.9 %** | 79 | 78 | 77 | 75 | 80 | 86 | 81 | 85 | 82 | 72 | 70 | 72 | 76 |
 
 **The E5 head** (`enrichment/steps/category_head.py`, model `enrichment/models/category_head.npz`):
 - **Model:** a 13-way logistic regression on the multilingual-E5 vector the pipeline already
   computes for clustering.
-- **Training data:** fitted on 4,101 LLM-teacher labels (`tools/gold/train_sample.json` +
-  `labels/T*.json`, one pass, same rubric). They are drawn from production with no URL or headline
-  shared with the gold set.
-- **C:** chosen by publisher-held-out cross-validation on the training data (75.8 % at C = 8). The
+- **Training data:** fitted on 7,056 LLM-teacher labels, one pass each under the same rubric:
+  - `train_sample.json` + `labels/T*.json`: 4,101 across 13 languages;
+  - `train2_sample.json` + `labels/U*.json`: 2,955 en/hi.
+
+  They are drawn from production with no URL or headline shared with the gold set.
+- **C:** chosen by publisher-held-out cross-validation on the training data (78.3 % at C = 8). The
   gold set is never used for fitting or tuning.
+- **Ceiling:** the two gold labelling passes agree 94.7 %, so that is roughly the most any model
+  can score here.
 - **Cost:** one 13×768 matrix product instead of 13 NLI passes.
 
-Re-run: `python tools/gold/embed.py train_sample.json category_sample.json`, then
+Re-run: `python tools/gold/embed.py train_sample.json train2_sample.json category_sample.json`, then
 `python tools/gold/train_head.py`.
 
 **Since 2026-10-07 the pipeline keeps English and Hindi only**, so en/hi accuracy is what counts.
@@ -101,9 +106,10 @@ space transfers. On the 300 en/hi gold items:
 
 | Training data | en/hi accuracy |
 |---|---|
-| all 4,101 labels | **76.6 %** |
+| all 4,101 labels (first round) | **76.6 %** |
 | the 1,382 en/hi labels only | 71.2 % |
 | all labels, en/hi weighted ×3 | 75.3 % |
+| all 7,056 labels (+2,955 en/hi, shipped) | **78.5 %** (en 78, hi 79) |
 
 Its most common errors (gold → predicted):
 - general → world: 22

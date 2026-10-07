@@ -4,9 +4,9 @@ tools/gold/train_head.py
 ════════════════════════
 Train the category head: multinomial logistic regression on the multilingual-E5 vector
 the pipeline already computes, fitted on LLM-teacher labels (labels/T*.json for
-train_sample.json) and scored on the held-out 13-language gold set.
+train_sample.json, labels/U*.json for train2_sample.json) and scored on the held-out 13-language gold set.
 
-  python tools/gold/embed.py train_sample.json category_sample.json
+  python tools/gold/embed.py train_sample.json train2_sample.json category_sample.json
   python tools/gold/train_head.py                    # CV-select C, score on gold, write the model
   python tools/gold/train_head.py --no-save          # evaluate only
 
@@ -30,21 +30,28 @@ HERE = Path(__file__).parent
 MODEL_OUT = ROOT / "enrichment" / "models" / "category_head.npz"
 
 
-def _load_train(prefix: str):
+def _load_train(sets: str):
+    """Training rows from every "<label prefix>:<sample name>" pair whose files exist."""
     import numpy as np
-    labels = {}
-    for f in sorted((HERE / "labels").glob(f"{prefix}*.json")):
-        for r in json.loads(f.read_text(encoding="utf-8")):
-            labels[int(r["gid"])] = r
-    items = {int(r["gid"]): r for r in json.loads((HERE / "train_sample.json").read_text(encoding="utf-8"))}
-    d = np.load(HERE / "train_sample.npz")
-    keep = [i for i, g in enumerate(d["gids"]) if int(g) in labels and not labels[int(g)].get("cant_tell")]
-    gids = d["gids"][keep]
-    X = d["X"][keep]
-    y = np.array([labels[int(g)]["category"] for g in gids])
-    w = np.array([float(labels[int(g)].get("confidence", 1.0)) for g in gids])
-    dom = np.array([items[int(g)]["domain"] for g in gids])
-    return X, y, w, dom
+    Xs, ys, ws, doms = [], [], [], []
+    for pair in sets.split(","):
+        prefix, sample = pair.split(":")
+        if not (HERE / f"{sample}.npz").exists():
+            continue
+        labels = {}
+        for f in sorted((HERE / "labels").glob(f"{prefix}*.json")):
+            for r in json.loads(f.read_text(encoding="utf-8")):
+                labels[int(r["gid"])] = r
+        items = {int(r["gid"]): r for r in json.loads((HERE / f"{sample}.json").read_text(encoding="utf-8"))}
+        d = np.load(HERE / f"{sample}.npz")
+        keep = [i for i, g in enumerate(d["gids"]) if int(g) in labels and not labels[int(g)].get("cant_tell")
+                and d["X"][i].any()]                       # an empty text embeds to a zero vector
+        gids = d["gids"][keep]
+        Xs.append(d["X"][keep])
+        ys.append(np.array([labels[int(g)]["category"] for g in gids]))
+        ws.append(np.array([float(labels[int(g)].get("confidence", 1.0)) for g in gids]))
+        doms.append(np.array([items[int(g)]["domain"] for g in gids]))
+    return np.concatenate(Xs), np.concatenate(ys), np.concatenate(ws), np.concatenate(doms)
 
 
 def main() -> int:
@@ -54,7 +61,8 @@ def main() -> int:
         except AttributeError:
             pass
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--labels", default="T", help="label file prefix in labels/ (default T)")
+    ap.add_argument("--sets", default="T:train_sample,U:train2_sample",
+                    help="label-prefix:sample pairs (default T:train_sample,U:train2_sample)")
     ap.add_argument("--grid", default="1,2,4,8,16,32")
     ap.add_argument("--no-save", action="store_true")
     args = ap.parse_args()
@@ -65,7 +73,7 @@ def main() -> int:
     from enrichment.steps.embedding import CLUSTER_EMBEDDING_MODEL
     import evaluate
 
-    X, y, w, dom = _load_train(args.labels)
+    X, y, w, dom = _load_train(args.sets)
     print(f"train: {len(y)} items, {len(set(dom))} publishers; "
           f"classes {dict(collections.Counter(y).most_common())}")
 

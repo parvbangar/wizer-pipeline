@@ -194,7 +194,7 @@ already have a cluster.
   publisher-labelled headlines, all 13 languages).
 - **NER, sentiment and keywords** run only for en/hi (`ENRICH_SUPPORTED_LANGUAGES`), which is
   now the whole corpus.
-- **Category head:** 76.7 % on the 13-language gold set vs 51.9 % for mDeBERTa
+- **Category head:** 77.9 % on the 13-language gold set (en 78 %, hi 79 %) vs 51.9 % for mDeBERTa
   (`docs/ACCURACY.md`). Retrain with `tools/gold/train_head.py` whenever the embedding model
   changes; the head refuses vectors from any other model.
 - **Clustering granularity** is the event: developments of one long-running story often form
