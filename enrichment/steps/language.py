@@ -115,13 +115,19 @@ def script_counts(text: str) -> dict[str, int]:
     return counts
 
 
-def _devanagari_language(text: str) -> str:
+def devanagari_scores(text: str) -> tuple[int, int, int]:
+    """Evidence counts (marathi, hindi, nepali) in a Devanagari text."""
     words = _WORD.findall(text)
     mr = sum(1 for w in words if w in _MARATHI_WORDS) + 2 * text.count("ळ")
     mr += sum(1 for w in words if len(w) > 3 and w not in _HINDI_WORDS
               and (w.endswith(_MARATHI_SUFFIXES) or _MARATHI_GENITIVE.search(w)))
     hi = sum(1 for w in words if w in _HINDI_WORDS)
     ne = sum(1 for w in words if w in _NEPALI_WORDS)
+    return mr, hi, ne
+
+
+def _devanagari_language(text: str) -> str:
+    mr, hi, ne = devanagari_scores(text)
     if ne > max(mr, hi):
         return "ne"
     return "mr" if mr > hi else "hi"

@@ -96,6 +96,7 @@ def backup(conn, ids: list[int], out: Path) -> None:
 def purge(conn, ids: list[int]) -> dict:
     stats = {}
     with conn.transaction():
+        conn.execute("set local statement_timeout = '20min'")   # the pooler ignores connect-time options
         conn.execute("select pg_advisory_xact_lock(hashtextextended('wizer:article_clusters', 0))")
         conn.execute("create temp table purge_ids (id bigint primary key) on commit drop")
         with conn.cursor().copy("copy purge_ids (id) from stdin") as cp:
@@ -157,7 +158,8 @@ def main() -> int:
         ap.error("--backup is required for a real run")
 
     import psycopg
-    conn = psycopg.connect(args.dsn, autocommit=True, options="-c statement_timeout=900000")
+    conn = psycopg.connect(args.dsn, autocommit=True)
+    conn.execute("set statement_timeout = '15min'")       # session pooler: connect-time options are ignored
     t0 = time.perf_counter()
     rows = conn.execute(CANDIDATES).fetchall()
     drop, keep_langs, drop_langs = [], collections.Counter(), collections.Counter()

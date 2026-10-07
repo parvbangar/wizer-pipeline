@@ -19,6 +19,14 @@ from pipeline.language_scope import article_language, in_scope
     ("Le gouvernement annonce", "", "fr", "fr"),                          # Latin: trust the declaration
     ("Modi ne kaha ki desh aage badhega", "", "hi", "hi"),                 # romanised Hindi from a Hindi source
     ("", "", "hi", "hi"),                                                 # nothing to read: declared
+    # 2026-10-07 purge leftovers:
+    ("विना पदवी वैद्यकीय व्यवसाय करणाऱ्यावर गुन्हा", "", "mr", "mr"),        # no marker words: declaration decides
+    ("विना पदवी वैद्यकीय व्यवसाय करणाऱ्यावर गुन्हा", "", "hi", "hi"),
+    ("सरकार ने कहा है कि योजना जारी रहेगी", "", "mr", "hi"),                  # Hindi evidence beats a "mr" label
+    ("Trump-Blames-Ukraine-Democrats : అంతా వీళ్ల వ‌ల్లే,,! Andhra Prabha Top News", "", "en", "te"),
+    ("Brazil-Election : గేమ్ చేంజ్ ..!,,Andhra Prabha Top Story", "", "en", "te"),
+    ("Bollywood star says 'धन्यवाद' to fans after the premiere in Mumbai", "", "en", "en"),
+    ("Sensex today: बाजार में तेजी, निफ्टी 25000 के पार", "", "en", "hi"),
     ("", "", None, "en"),
 ])
 def test_article_language(title, desc, declared, want):

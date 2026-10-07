@@ -18,11 +18,30 @@ from __future__ import annotations
 
 import os
 
-from enrichment.steps.language import _DOMINANT, _SCRIPT_LANG, _devanagari_language, script_counts
+from enrichment.steps.language import _SCRIPT_LANG, devanagari_scores, script_counts
 
 LANGUAGES = frozenset(
     c.strip().lower() for c in os.getenv("WIZER_LANGUAGES", "en,hi").split(",") if c.strip()
 )
+
+# A non-Latin script decides once it holds this share of the letters. Not a
+# majority: Andhra Prabha headlines lead with an English URL slug
+# ("Trump-Blames-Ukraine-Democrats : <Telugu>"), and Hindi headlines mix in
+# English words. One quoted Hindi word in an English headline stays below it.
+_SCRIPT_SHARE = 0.25
+# Any other Indian (or non-Latin) script decides from this many letters even as a
+# minority: English outlets quote Hindi, but practically never write Telugu or Tamil.
+_OTHER_SCRIPT_LETTERS = 8
+
+
+def _devanagari(text: str, declared: str) -> str:
+    """Hindi vs Marathi vs Nepali; with no evidence either way, the declaration decides."""
+    mr, hi, ne = devanagari_scores(text)
+    if ne > max(mr, hi):
+        return "ne"
+    if mr != hi:
+        return "mr" if mr > hi else "hi"
+    return declared if declared in ("mr", "ne") else "hi"
 
 
 def article_language(title: str, description: str, declared: str | None) -> str:
@@ -31,17 +50,17 @@ def article_language(title: str, description: str, declared: str | None) -> str:
     text = f"{title or ''} {description or ''}"[:2000]
     counts = script_counts(text)
     letters = sum(counts.values())
-    if letters >= 4:
-        script, n = max(counts.items(), key=lambda kv: kv[1])
-        if n / letters >= _DOMINANT:
+    non_latin = {s: n for s, n in counts.items() if s != "latn"}
+    if letters >= 4 and non_latin:
+        script, n = max(non_latin.items(), key=lambda kv: kv[1])
+        if n / letters >= _SCRIPT_SHARE or (script != "deva" and n >= _OTHER_SCRIPT_LETTERS):
             if script == "deva":
-                return _devanagari_language(text)
+                return _devanagari(text, declared)
             if script in _SCRIPT_LANG:
                 return _SCRIPT_LANG[script]
             if script == "beng":
                 return "bn"
-            if script != "latn":
-                return script            # another script entirely (Cyrillic, Arabic …): not in scope
+            return script                # another script entirely (Cyrillic, Arabic …): not in scope
     return declared or "en"
 
 
