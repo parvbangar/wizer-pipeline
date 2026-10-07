@@ -70,6 +70,48 @@ def load_state(state_path: str | Path | None, model: str = CLUSTER_EMBEDDING_MOD
     return state
 
 
+# Backoff between attempts of one chunk while the database is saturated.
+APPLY_BACKOFF_S = (20, 60)
+
+
+def _saturated(e: Exception) -> bool:
+    msg = str(e).lower()
+    return any(t in msg for t in ("timed out", "timeout", "57014", "canceling statement",
+                                  "connection", "server disconnected", "too many"))
+
+
+def _apply(model: str, chunk: list[dict], stamps: list[dict]) -> dict:
+    """
+    wizer_apply_cluster_changes for one chunk, surviving a saturated database.
+
+    It writes absolute values (sums, counts, stamps from memory), so re-applying a
+    chunk whose earlier attempt did commit changes nothing. On a timeout the chunk
+    is retried after a backoff, then split in half (2026-10-07: with 8 enrichment
+    writers on Micro a 150-cluster chunk timed out twice and crashed the job).
+    """
+    for i, wait in enumerate((0, *APPLY_BACKOFF_S)):
+        if wait:
+            log.warning("Cluster write of %d clusters timed out — retrying in %d s", len(chunk), wait)
+            time.sleep(wait)
+        try:
+            return db.apply_cluster_changes(model, chunk, stamps)
+        except Exception as e:
+            if not _saturated(e):
+                raise
+            last = e
+            if len(chunk) > 1 and i == 0:
+                break                                    # split straight away; smaller writes get through
+    if len(chunk) <= 1:
+        raise last
+    half = len(chunk) // 2
+    ids_a = {c["id"] for c in chunk[:half]}
+    a = _apply(model, chunk[:half], [s for s in stamps if s["cluster_id"] in ids_a])
+    b = _apply(model, chunk[half:], [s for s in stamps if s["cluster_id"] not in ids_a])
+    return {"clusters_written": int(a["clusters_written"]) + int(b["clusters_written"]),
+            "articles_written": int(a["articles_written"]) + int(b["articles_written"]),
+            "synced_at": max(str(a["synced_at"]), str(b["synced_at"]))}
+
+
 def flush(state: ClusterState, model: str = CLUSTER_EMBEDDING_MODEL) -> dict:
     """Write pending changes in chunks; marks the state flushed only if every chunk succeeded."""
     clusters, articles = state.pending_changes()
@@ -81,7 +123,7 @@ def flush(state: ClusterState, model: str = CLUSTER_EMBEDDING_MODEL) -> dict:
     for i in range(0, len(clusters), CHUNK_CLUSTERS):
         chunk = clusters[i:i + CHUNK_CLUSTERS]
         stamps = [a for c in chunk for a in by_cluster.pop(c["id"], [])]
-        row = db.apply_cluster_changes(model, chunk, stamps)
+        row = _apply(model, chunk, stamps)
         written["clusters"] += int(row["clusters_written"])
         written["articles"] += int(row["articles_written"])
         synced = row["synced_at"]

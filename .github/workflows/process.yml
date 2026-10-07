@@ -138,6 +138,9 @@ jobs:
     timeout-minutes: 135   # setup ~15 min + 100-min budget + final save; < 150-min claim lease
     strategy:
       fail-fast: false
+      # At most 4 shards write at once: on 2026-10-07 nine shards + the sweeper
+      # saturated the Micro database (every save and the cluster write timed out).
+      max-parallel: 4
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     env:

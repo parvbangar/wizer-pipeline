@@ -38,8 +38,10 @@ jobs:
       cancel-in-progress: false
     strategy:
       fail-fast: false
+      # Two sweepers: they overlap process.yml's (up to 4) shards, and the Micro
+      # database stops answering past ~6 concurrent bulk writers (2026-10-07).
       matrix:
-        runner: [0, 1, 2, 3]
+        runner: [0, 1]
     env:
       SUPABASE_URL:               ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY:       ${{ secrets.SUPABASE_SERVICE_KEY }}
