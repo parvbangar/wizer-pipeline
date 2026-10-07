@@ -209,8 +209,12 @@ def main() -> int:
         or (f.get("language_code") or "").split("-")[0].lower() in INDIC)}
     known_hosts = {host_key(f["domain"]) for f in feeds if f.get("domain") and f.get("is_active")}
     ours_by_host: dict[str, int] = defaultdict(int)
-    for r in get_client().rpc("wizer_domain_counts", {"p_day": day.isoformat()}).execute().data or []:
-        ours_by_host[host_key(r["domain"])] += int(r["n"])
+    start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+    for h in range(24):               # an hour per call: a whole day breaks the 30 s API timeout on Micro
+        window = {"p_from": (start + timedelta(hours=h)).isoformat(),
+                  "p_to": (start + timedelta(hours=h + 1)).isoformat()}
+        for r in get_client().rpc("wizer_domain_counts_range", window).execute().data or []:
+            ours_by_host[host_key(r["domain"])] += int(r["n"])
 
     rows: list[dict] = []
     # 1. sitemaps

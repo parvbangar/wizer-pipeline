@@ -37,6 +37,7 @@ MIGRATION_ORDER: list[str] = [
     "coverage_migration.sql",            # coverage_daily: sitemap / GDELT miss rates per publisher
     "cluster_hnsw_drop_migration.sql",   # no ANN index on clusters: twins are found in memory
     "cluster_state_delta_migration.sql", # updated_at index + per-branch plans for wizer_cluster_state
+    "coverage_range_migration.sql",      # wizer_domain_counts_range: hourly windows for the coverage audit
 ]
 
 # Roles that Supabase provides and some migrations GRANT to / create policies

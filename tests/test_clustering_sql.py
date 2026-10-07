@@ -1435,3 +1435,17 @@ class TestLanguagePurge:
         assert cluster(conn, solo_cid) is None                               # emptied cluster removed
         with gzip.open(tmp_path / "bk" / "articles.jsonl.gz", "rt", encoding="utf-8") as f:
             assert sorted(json.loads(line)["id"] for line in f) == sorted([ta, solo])
+
+
+class TestCoverageCounts:
+
+    def test_domain_counts_range_is_half_open(self, conn):
+        base = datetime(2026, 10, 6, tzinfo=timezone.utc)
+        for d, t in (("A.com", base), ("a.com", base + timedelta(minutes=59)), ("b.com", base + timedelta(hours=1)),
+                     ("", base + timedelta(minutes=5))):
+            add_article(conn, domain=d, ingested=t)
+        rows = dict(conn.execute("SELECT * FROM wizer_domain_counts_range(%s, %s)",
+                                 (base, base + timedelta(hours=1))).fetchall())
+        assert rows == {"a.com": 2, "(unknown)": 1}
+        day = dict(conn.execute("SELECT * FROM wizer_domain_counts(%s)", (base.date(),)).fetchall())
+        assert day == {"a.com": 2, "b.com": 1, "(unknown)": 1}       # the hourly windows add up to the day
